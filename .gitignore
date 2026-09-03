@@ -1,0 +1,20 @@
+# Ambiente Python
+.venv/
+__pycache__/
+*.pyc
+
+# Sistema
+.DS_Store
+
+# Logs de teste de carga (locais, não fazem parte do código publicado)
+logs/
+
+# Saídas geradas pelo pipeline (EPUB/AZW3 de teste)
+saida/
+
+# Amostras de PDF com direito autoral ou dados pessoais.
+# Regra específica, não "*.pdf" genérico: um PDF de exemplo pequeno e
+# livre de direitos autorais pode ser versionado no futuro para
+# documentação de uso (ver ARCHITECTURE.md/README.md).
+samples/*.pdf
+samples/CV_*
