@@ -239,7 +239,14 @@ reais encontrados ao validar com `samples/001-080.pdf`:
   calibrados contra os dois livros reais testados (80 e 208 páginas) — não
   contra um universo de livros. Risco residual conhecido e documentado em
   detalhe nas seções acima (com exemplos concretos de que tipo de livro
-  poderia quebrar cada um), não uma garantia geral.
+  poderia quebrar cada um), não uma garantia geral. Um terceiro livro
+  (PEREIRA, 903 páginas) passou pela rota de produção na Fase 4.3 e não
+  teve nenhum cabeçalho de página real detectado — resultado ambíguo
+  entre "este livro não tem cabeçalho repetido" e "o limiar não bate
+  nesse layout", não fechado, ver Fase 4.3 para os dados completos. Não
+  conta como uma terceira calibração (nenhum dado novo entrou nos
+  limiares), só como uma tentativa de validação com resultado
+  inconclusivo.
 
 ## RENDER_DPI: testado, revertido para 200
 
@@ -356,6 +363,20 @@ mecanismo, não calibra um limiar contra dado real**.
 > que vai processá-lo**. Não assumir que funciona só porque o mecanismo
 > foi validado num PDF sintético — revalidar com um livro nativo real
 > antes de confiar no resultado em produção.
+>
+> **Atualização (Fase 4.3) — deixou de ser puramente hipotético, mas
+> continua sem resolução**: um livro nativo real (PEREIRA, 903 páginas)
+> passou pelo pipeline de produção. Contagem independente de tags `<h2>`
+> no `.epub` gerado (o marcador usado por `construir_html()` para título
+> de capítulo detectado) deu **zero em todas as 903 páginas** — nenhum
+> título de capítulo foi detectado por esta rota nesse livro. Ambíguo
+> entre "este livro não tem título de capítulo com salto de fonte grande
+> o bastante" e "o limiar de 1,8x/analogia não bate neste layout" — a
+> mesma ambiguidade (a) vs. (b) não fechada, documentada em detalhe na
+> Fase 4.3 para a detecção de cabeçalho repetido (função diferente, mas
+> mesmo livro, mesma sessão de teste). Não tratar como confirmação de que
+> a rota funciona nem como prova de que falhou — é dado real novo, ainda
+> sem conclusão.
 
 **Fonte (b) — OCR (`image_to_data()`, altura de bounding box)**: testada
 em 5 páginas reais de início de capítulo, localizadas dentro do próprio
@@ -577,8 +598,10 @@ livro de 208 páginas.
 ### Limitações conhecidas (Fase 3)
 
 - Fonte (a) — PDF nativo — usa o mesmo limiar da fonte (b) por analogia,
-  sem nenhuma calibração contra um livro nativo real (nenhum existe no
-  projeto). Ver aviso de risco residual explícito acima.
+  sem nenhuma calibração contra um livro nativo real. Um livro nativo
+  real (PEREIRA, 903 páginas) passou pela rota de produção na Fase 4.3 —
+  zero títulos de capítulo detectados nas 903 páginas, resultado
+  ambíguo, não conclusivo. Ver aviso de risco residual explícito acima.
 - Ruído de OCR pode produzir um título tecnicamente detectado na página
   certa, mas com texto ilegível (ex. pg-106, "Como delinear um Ed tita: de
   criqrles" em vez de "Como delinear um estudo de coorte?") — a detecção
@@ -1389,3 +1412,183 @@ observado nos outros dois livros, 903 páginas levariam horas nesta
 máquina — desproporcional para uma validação de formatação que não
 depende do livro inteiro. O pipeline rodado é o mesmo código de
 produção, sem nenhuma função mockada, só com menos páginas de entrada.
+
+## Fase 4.5: extração de capa real; investigação (e abandono) de supressão de logo/figura
+
+### Objetivo e restrição
+
+Motivação original (relato do usuário, com imagens anexadas): o logo
+decorativo do selo GEN aparecia como ruído de texto no EPUB gerado
+("x* Grupo Editorial Nacional"), e todo EPUB gerado tinha uma capa
+genérica ("Generating default cover" no log do Calibre), nunca a capa
+real do livro. Hipótese de escopo maior levantada: já que EPUBs nativos
+tratam imagem como binário real referenciado por `<img>`, o Foliant
+deveria extrair capa/logos/figuras reais do PDF em vez de deixar que
+esses elementos gráficos sejam OCRizados como texto.
+
+Restrição: não pode regredir a saída de texto já validada nas Fases 2-4
+(contagem de parágrafos, caminho nativo vs. OCR) em nenhum dos livros de
+calibração.
+
+### Investigação (dados reais, antes de qualquer código)
+
+**Passo 1 — qual caminho a página problemática usa.** Confirmado por
+inspeção direta do PDF (`samples/livro_completo_208pg.pdf`, livro do
+Gil, 208 páginas): **100% das páginas usam o caminho OCR**
+(`pagina.get_text("text")` vazio em todas as páginas verificadas) — não
+há nenhuma página nativa neste livro. `pagina.get_images()` devolve
+exatamente **1 imagem por página**, e essa imagem é a **página inteira
+escaneada como 1 JPEG só** (página 0: página 578.16×824.40pt, proporção
+0.7016; imagem embutida 2409×3437px, proporção 0.7008 — diferença de
+0.1%). Ou seja: o cenário do meta-prompt original ("caminho nativo,
+extração trivial via `get_images()`/`extract_image()` por sub-região")
+**não existe neste livro** — não há nenhuma imagem em sub-região
+extraível, só a página inteira.
+
+**Passo 2 — sinais candidatos para detectar glifo decorativo no
+caminho OCR.** Localizada a página do selo GEN: página 4 do PDF
+(1-indexed; índice 3), via OCR direto das primeiras páginas. Dados reais
+de `pytesseract.image_to_data()` (DPI de produção, `RENDER_DPI=200`):
+
+| Elemento | Altura (px) | Mediana da página (px) | Razão | Confiança | Nº caracteres |
+|---|---|---|---|---|---|
+| Ícone do logo, fragmento 1 (`"*"`) | 85.0 | 22.8 | **3.7x** | — | 1 |
+| Ícone do logo, fragmento 2 (`"x*"`) | 47.0 | 22.8 | **2.06x** | — | 2 |
+| Legenda pequena do logo (`"Grupo"`/`"Editorial"`/`"Nacional"`, cada um vertical) | 11-15 | 22.8 | ~0.6x | 93-96 (normal!) | 5-8 |
+| Corpo de texto normal da mesma página | 20-25 | 22.8 | ~1.0x | 90-97 | — |
+
+Comparado com os dois grupos já calibrados neste projeto:
+- Título de capítulo real (`LIMIAR_RAZAO_TITULO`): razão 2.0-2.5x
+- Ornamento decorativo já documentado (comentário de
+  `LIMIAR_TITULO_MIN_CHARS`, número de capítulo "21"): razão 5.8x
+
+O fragmento 1 do ícone (3.7x) cai claramente no vale entre esses dois
+grupos — um limiar em 3.5x, combinado com comprimento de texto <=3
+caracteres, isola esse fragmento sem risco aparente. **O fragmento 2
+(2.06x) não tem essa folga** — cai dentro da mesma faixa de razão de um
+título real (2.0-2.5x).
+
+**Colisão real encontrada ao tentar baixar o limiar para cobrir o
+fragmento 2**: varrendo `image_to_data()` de páginas 8-39 do mesmo
+livro em busca de conteúdo curto (<=3 caracteres) legítimo para
+comparação, a página 21 (uma página com conteúdo tabular/lista muito
+degradado pelo OCR) tem a palavra real `"se"` com razão **2.73x** —
+mais alta que a razão do próprio fragmento do ícone (2.06x) que se
+queria capturar. Ou seja: **não existe um limiar de razão que pegue o
+fragmento 2 do ícone sem também remover texto real já presente no
+mesmo livro** — não é uma suposição, é uma colisão medida.
+
+**Achado adicional, descoberto só depois de implementar e comparar
+antes/depois byte a byte**: o fragmento 1 do ícone (`"*"`, o único que
+o limiar de 3.5x conseguia isolar com segurança) **já era removido por
+código pré-existente**, sem relação nenhuma com detecção de imagem —
+`_RE_RUIDO_INICIAL` (regex que zera pontuação decorativa solta no
+início de uma linha, ver comentário na definição) já reduz uma linha
+`"*"` isolada a string vazia, que depois é descartada pelo filtro
+`if p.strip()` em `construir_html()`. Confirmado diretamente:
+`limpar_linha('*')` → `''` (removido), `limpar_linha('x*')` → `'x*'`
+(inalterado, porque `'x'` não está na classe de caracteres de ruído da
+regex). Ou seja: uma heurística nova de altura/proporção foi
+implementada, validada, e só DEPOIS percebida como **totalmente
+redundante** com o único caso real que ela conseguia cobrir com
+segurança — o caso que ela precisava resolver (`"x*"`) é exatamente o
+caso que a colisão acima impede de resolver sem regressão.
+
+**Passo 3 — viabilidade de capa real.** Testado com sucesso nos 2 livros
+de calibração disponíveis:
+
+| Livro | Proporção da página | Proporção da imagem da 1ª página | Diferença | Extraída? |
+|---|---|---|---|---|
+| Gil, 208pg (100% OCR) | 0.7016 | 0.7008 | 0.1% | Sim — `cover.jpeg`, 732446 bytes |
+| PEREIRA, 903pg (quase 100% nativo, mas página 0 é OCR) | 0.7727 | 0.7509 | 2.8% | Sim — `cover.jpeg`, 98477 bytes |
+
+Extração direta do binário já embutido no PDF via
+`doc.extract_image(xref)`, sem re-renderizar nada — mesmo em livros de
+texto nativo, a página 0 costuma ser uma imagem de capa inteira
+(confirmado no PEREIRA: `get_text("text")` vazio só na página 0, as
+outras 902 são nativas).
+
+### Decisão / critério (calibrado com os números acima)
+
+**Capa real — implementada.** `extrair_capa(doc, destino_dir)`: extrai
+a 1ª imagem da página 0 cuja proporção largura/altura bate com a da
+página inteira (`TOLERANCIA_PROPORCAO_CAPA = 0.15`, ver comentário no
+código para a folga medida acima), salva como arquivo, passa para
+`ebook-convert --cover`. Se nenhuma imagem bater a proporção, retorna
+`None` e o Calibre volta ao comportamento antigo (capa genérica) — sem
+regressão possível, só ganho condicional.
+
+**Supressão de glifo decorativo (ícone de logo) — investigada e
+abandonada, não implementada.** Motivo, em ordem de descoberta: (1) o
+único caso que um limiar de altura/razão consegue isolar com segurança
+(fragmento de razão 3.7x) já é removido por código pré-existente sem
+relação com detecção de imagem; (2) o caso que de fato motivou a tarefa
+(fragmento de razão 2.06x, o "x*" relatado) não tem limiar seguro —
+colide com texto real de razão mais alta (2.73x) na mesma obra. Nenhuma
+combinação de altura/razão + comprimento de texto testada separa os
+dois grupos com margem. **Não implementado nenhum sinal posicional
+(coluna isolada à esquerda/direita do corpo do texto) como alternativa**
+— ficou fora do escopo desta fase; ver Limitações conhecidas.
+
+**Extração de figuras internas reais (ex.: fluxogramas mencionados no
+texto do Gil) — fora de escopo, não tentada.** Investigação do Passo 1
+já mostrou que não há nenhuma imagem em sub-região extraível neste
+livro (toda "imagem" de `get_images()` é a página inteira) — a única
+via possível seria recortar do pixmap já renderizado usando um critério
+posicional sobre `image_to_data()`. Página real com esse padrão
+(índice 105, capítulo "Como delinear um estudo de coorte") mostra os
+fragmentos decorativos **misturados palavra-a-palavra dentro do mesmo
+bloco do título real** ("COMO DELINEAR UM" + "Ed tita: DE CRIQRLES" no
+mesmo `block_num`) — sem fronteira de bloco ou palavra segura para
+recortar sem risco de cortar texto real do título. Descartado por
+decisão explícita do usuário, não por esgotamento de tentativas.
+
+> **RISCO RESIDUAL**: nenhum. A funcionalidade de capa é aditiva e
+> segura por padrão (`None` = comportamento antigo). A supressão de
+> logo/figura não foi implementada — o ruído relatado originalmente
+> (`"x*"` antes de "Grupo Editorial Nacional") **continua presente** no
+> EPUB gerado, sem regressão em relação ao estado anterior a esta fase
+> (nunca foi removido, continua não sendo). Registrado como caminho
+> **investigado e abandonado** — não reabrir com a mesma estratégia
+> (altura/razão + comprimento de texto no caminho OCR) sem um sinal novo
+> que não colida com o caso real de razão 2.73x documentado acima.
+
+### Validação
+
+Rodado o pipeline completo de produção (não uma função isolada) nos 2
+livros de calibração disponíveis, com o código final (capa real
+implementada, supressão de glifo revertida):
+
+| Livro | Caminho | Exit code | Tempo | Tamanho do EPUB | Parágrafos (`<p>`) | Capa real? |
+|---|---|---|---|---|---|---|
+| `samples/livro_completo_208pg.pdf` (208pg, Gil) | 100% OCR | 0 | 20m48s | 983068 bytes (antes desta fase: 336648 bytes — diferença de ~646KB, consistente com o binário da capa de 732446 bytes já comprimido) | 1205 — **idêntico** à contagem antes desta fase (mesmo dado, sem regressão) | Sim, sem "Generating default cover" no log |
+| PEREIRA (903pg, quase 100% nativo) | nativo (902/903 páginas), OCR só na página 0 (capa) | 0 | 2m15s | 1387185 bytes (sem baseline anterior deste livro específico para comparar) | 10578 | Sim, sem "Generating default cover" no log |
+
+A contagem de parágrafos idêntica (1205 = 1205) no livro do Gil, único
+livro onde a supressão de glifo chegou a rodar de verdade antes de ser
+revertida, é a evidência direta da redundância descrita acima — a saída
+final do pipeline é byte a byte igual com ou sem aquela função, em
+todas as 208 páginas, não só na página do logo.
+
+Confirmado também, via `extrair_texto_pagina()` diretamente (função de
+produção, não script de pesquisa), que a página do fluxograma (índice
+105) produz o mesmo texto garbled de sempre — nenhuma mudança desta
+fase toca esse caminho, conforme esperado (fora de escopo).
+
+### Limitações conhecidas
+
+- O ruído `"x*"` antes de "Grupo Editorial Nacional" (e qualquer glifo
+  decorativo semelhante de razão próxima a 2x) continua aparecendo no
+  EPUB — não resolvido, não escondido.
+- Nenhuma figura interna real do livro (fluxogramas, nomogramas
+  mencionados no texto do Gil) é extraída como imagem — o livro
+  permanece 100% texto (real ou ruído de OCR), sem nenhuma imagem de
+  conteúdo.
+- `extrair_capa()` só testada em 2 livros, ambos com a 1ª página sendo
+  uma imagem de página inteira (um 100% escaneado, outro com só a
+  capa em imagem e o resto nativo). Não testado contra um livro de
+  texto nativo cuja capa seja uma imagem PARCIAL da primeira página
+  (ex.: uma ilustração pequena centralizada, com bastante margem
+  branca ao redor) — nesse caso a proporção não bateria e nenhuma capa
+  seria extraída (retorno `None`), comportamento seguro por padrão, mas
+  não confirmado com um exemplo real desse tipo.

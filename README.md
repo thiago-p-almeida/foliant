@@ -4,7 +4,7 @@ Pipeline offline e leve que transforma um PDF grande ou escaneado num
 e-book pronto para Kindle (EPUB, com OCR em português), sem nunca carregar
 o documento inteiro em memória.
 
-## Avaliaçao Técnica 
+## Avaliação Técnica
 
 - **RAM praticamente constante independente do tamanho do livro**: pico
   de ~282MB (`peak memory footprint`) testado tanto em 80 páginas/66MB
@@ -168,6 +168,13 @@ python3 foliant.py entrada.pdf saida.epub --autor "Nome do Autor"
   Tauri (sidecar PyInstaller), saída confirmada byte-idêntica ao pipeline
   Python original nos 2 livros de teste. Tesseract/Calibre continuam
   instalados separadamente (não embutidos nesta fase).
+- **Fase 4.5: concluída parcialmente** — capa real extraída da 1ª página
+  do PDF quando disponível (sem mais "capa genérica" do Calibre),
+  validada nos 2 livros de teste. Supressão de ruído decorativo de OCR
+  (ex.: logo de editora lido como texto) e extração de figuras internas
+  reais (ex.: fluxogramas) foram investigadas com dados reais e
+  conscientemente não implementadas — ver `ARCHITECTURE.md` para a
+  colisão de dados encontrada.
 - **Fase 5 (planejada)**: MVP web client-side.
 
 Detalhes de arquitetura, decisões e o teste de carga que validou o
@@ -226,6 +233,14 @@ suficiente para validar o mecanismo, não para provar que generaliza —
 risco residual documentado explicitamente em `ARCHITECTURE.md`. Livros
 com layout muito diferente dos dois testados podem exigir ajuste dos
 limiares antes de produzir um resultado limpo.
+
+Elementos gráficos decorativos (logos de editora, ornamentos) em
+páginas escaneadas são OCRizados como texto, viram ruído visível no
+EPUB (ex.: um logo lido como `"x*"`) e não são suprimidos — investigado
+e não resolvido, ver Fase 4.5 em `ARCHITECTURE.md`. Figuras internas
+reais mencionadas no texto (fluxogramas, nomogramas) também não são
+extraídas como imagem — o EPUB gerado a partir de um livro escaneado
+não tem nenhuma imagem de conteúdo, só a capa (quando extraível).
 
 ## Licença
 

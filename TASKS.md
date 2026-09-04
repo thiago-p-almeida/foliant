@@ -250,9 +250,14 @@ em escalas bem diferentes (8 e 26 entradas, ambos próximos à estrutura
 real do livro), depois de 4 correções reais encontradas e aplicadas
 durante a própria validação — mesmo padrão das fases anteriores: testar
 em volume real primeiro, corrigir o que aparecer, só então fechar.
-Fonte (a) (PDF nativo) permanece como risco residual explícito, não
-testado contra dado real, documentado para não ser esquecido se um PDF
-nativo de livro passar pelo pipeline no futuro.
+Fonte (a) (PDF nativo) permanece como risco residual explícito. **Atualização
+(Fase 4.3)**: deixou de ser puramente hipotético — um PDF nativo real
+(PEREIRA, 903 páginas) passou pelo pipeline em produção, e a contagem de
+`<h2>` no `.epub` gerado deu zero em todas as 903 páginas (nenhum título
+de capítulo detectado). Resultado ambíguo, não conclusivo (mesma
+ambiguidade documentada em `ARCHITECTURE.md`, Fase 4.3, para a detecção
+de cabeçalho repetido) — não tratar como validação bem-sucedida nem como
+falha confirmada da heurística.
 
 `requirements.txt`: não alterado — nenhuma dependência nova (usado
 `statistics` da stdlib, além do que já estava em uso).
@@ -793,6 +798,96 @@ Comprimento de parágrafo bem acima do baseline de ~70 caracteres (um por
 linha física de OCR) confirma que a fusão está funcionando de verdade
 nesses dois livros também, não só no livro de 903 páginas que motivou a
 correção.
+
+## Fase 4.5: extração de capa real; investigação (e abandono) de supressão de logo/figura (2026-09-04)
+
+Motivado por relato do usuário (com imagens anexadas): o logo do selo
+GEN aparecia como ruído de texto (`"x* Grupo Editorial Nacional"`) no
+EPUB do livro do Gil, e todo EPUB gerado tinha capa genérica
+("Generating default cover" no log do Calibre, nunca a capa real).
+Escopo original também incluía extrair figuras internas reais
+(fluxogramas mencionados no texto) como imagem.
+
+Testado contra `samples/livro_completo_208pg.pdf` (208 páginas, Gil,
+100% OCR) e o PDF "Artigos Científicos" (PEREIRA, 903 páginas, quase
+100% nativo).
+
+- [x] **Capa real extraída da 1ª página do PDF.** Resultado: confirmado
+  nos 2 livros de calibração — Gil (proporção página 0.7016 vs. imagem
+  0.7008, diferença 0.1%, capa de 732446 bytes) e PEREIRA (proporção
+  página 0.7727 vs. imagem 0.7509, diferença 2.8%, capa de 98477 bytes).
+  Log do Calibre confirma ausência da linha "Generating default cover"
+  nos dois casos, antes presente em toda execução. Extração direta do
+  binário via `doc.extract_image()`, sem re-renderizar — código
+  aditivo e seguro por padrão (`None` = comportamento antigo se nenhuma
+  imagem bater a proporção da página).
+
+- [x] **Supressão do ícone decorativo do logo GEN — tentada,
+  investigada a fundo, e revertida.** Resultado: **não resolvida** —
+  ruído original continua presente no EPUB, sem regressão em relação ao
+  estado anterior (nunca foi removido antes, continua não sendo agora).
+  Ver `ARCHITECTURE.md`, Fase 4.5, para a tabela completa de dados reais.
+  Resumo do que foi encontrado, em ordem:
+  - O ícone da logo é OCRizado como **2 fragmentos separados**, não 1:
+    `"*"` (razão de altura 3.7x a mediana da página) e `"x*"` (razão
+    2.06x) — o segundo é o que aparece no EPUB (`"x*"` antes de "Grupo
+    Editorial Nacional"), não o primeiro.
+  - Implementado um limiar (altura >= 3.5x mediana + comprimento <=3
+    caracteres) que isola o fragmento de razão 3.7x com segurança
+    (entre o pior título real conhecido, 2.5x, e o pior ornamento
+    decorativo já documentado, 5.8x).
+  - **Bug real encontrado só depois de comparar antes/depois byte a
+    byte no pipeline de produção completo** (não um script de
+    pesquisa): a contagem de parágrafos do livro do Gil ficou
+    **idêntica** (1205 = 1205) com e sem a nova função. Investigação da
+    causa: uma regex pré-existente (`_RE_RUIDO_INICIAL`, já usada para
+    limpar pontuação decorativa solta) **já removia** o fragmento de
+    razão 3.7x (`limpar_linha('*') == ''`, descartado como parágrafo
+    vazio) — a função nova nunca teve efeito observável em lugar
+    nenhum do livro. `'x*'` não é afetado pela regex antiga porque
+    `'x'` não está na classe de ruído dela.
+  - Tentativa de baixar o limiar para cobrir também o fragmento de
+    razão 2.06x (`"x*"`, o caso que de fato precisava ser resolvido):
+    **colide com texto real**. Varredura de conteúdo curto (<=3
+    caracteres) nas páginas 8-39 do mesmo livro encontrou a palavra
+    real `"se"` (página 21) com razão **2.73x** — mais alta que a razão
+    do próprio ícone que se queria capturar. Não existe limiar de
+    altura/razão que separe os dois casos com os dados disponíveis.
+  - **Decisão**: revertida a função `remover_glifos_decorativos` e os
+    limiares associados — não haveria benefício real (o único caso que
+    cobria já era coberto) e o caso que precisava resolver não tem
+    critério seguro. Registrado como caminho **investigado e
+    abandonado**, não como TODO em aberto — não reabrir com a mesma
+    estratégia (altura/razão de OCR) sem um sinal novo.
+
+- [x] **Extração de figuras internas reais (fluxogramas) — fora de
+  escopo, confirmado não afetado.** Resultado: nenhuma mudança feita.
+  Investigação (Passo 1 do meta-prompt original) mostrou que este livro
+  não tem NENHUMA imagem em sub-região extraível via PyMuPDF — toda
+  "imagem" de `get_images()` é a página inteira (livro 100% escaneado).
+  A única via seria recorte heurístico do pixmap já renderizado; a
+  página real com esse padrão (índice 105, capítulo "Como delinear um
+  estudo de coorte") tem os fragmentos decorativos misturados
+  palavra-a-palavra dentro do MESMO bloco do título real, sem fronteira
+  seguro pra recorte. Descartado por decisão explícita do usuário diante
+  dessa evidência, confirmado inalterado via `extrair_texto_pagina()`
+  (função de produção) antes de fechar a tarefa.
+
+**Fechamento**: 1 de 3 objetivos originais entregue (capa real, testada
+e funcionando nos 2 livros de calibração, zero regressão). Os outros 2
+(supressão de logo, extração de figura) foram investigados com dados
+reais e conscientemente não implementados — não por falta de tempo, mas
+porque os dados reais coletados mostram que a abordagem heurística
+proposta no meta-prompt original não separa ruído de conteúdo real com
+segurança neste livro. Validação completa nos 2 livros de calibração
+disponíveis (Gil 208pg, PEREIRA 903pg) — pipeline de produção completo,
+exit code 0 nos dois, contagem de parágrafos do Gil idêntica à anterior
+a esta fase (1205 = 1205), caminho nativo do PEREIRA estruturalmente
+intocado por qualquer código desta fase (só a página 0, a capa, usa
+OCR).
+
+`requirements.txt`: não alterado — nenhuma dependência nova (PyMuPDF já
+fornecia `get_images()`/`extract_image()`).
 
 ## Backlog: acelerar tempo de OCR/conversão entre iterações de teste
 

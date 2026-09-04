@@ -705,12 +705,69 @@ def agrupar_cabecalhos(contador: Counter, total_paginas: int) -> set[str]:
     return cabecalhos
 
 
-def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> set[str]:
+# Tolerância de proporção (largura/altura) entre a primeira página do PDF
+# e uma imagem embutida nela para aceitá-la como capa real — ver
+# `extrair_capa`. Livro escaneado real (samples/livro_completo_208pg.pdf):
+# página 578.16x824.40pt (proporção 0.7016) contra imagem embutida
+# 2409x3437px (proporção 0.7008) — diferença de 0.1%, bem abaixo de
+# qualquer folga necessária. 15% dá margem para variação de crop/margem
+# de scanner sem abrir espaço para aceitar uma imagem pequena/decorativa
+# (ex.: um brasão ou selo no canto de uma página de texto nativo) como se
+# fosse a capa inteira.
+TOLERANCIA_PROPORCAO_CAPA = 0.15
+
+
+def extrair_capa(doc: "pymupdf.Document", destino_dir: Path) -> Path | None:
+    """Extrai a capa real do livro a partir da 1ª página do PDF, sem
+    re-renderizar nada: livro escaneado real tem a página inteira já
+    embutida como 1 imagem JPEG só (ver ARCHITECTURE.md — este PDF não
+    tem NENHUMA imagem em sub-região, get_images() sempre devolve a
+    página inteira). Extração direta do binário via
+    `doc.extract_image(xref)`.
+
+    Só aceita a imagem se a proporção largura/altura dela bater com a
+    da página (ver TOLERANCIA_PROPORCAO_CAPA) — evita usar uma imagem
+    pequena/decorativa de uma primeira página de texto nativo como capa.
+    Retorna None se não houver imagem compatível: `convert_to_ebook` não
+    passa `--cover` e o Calibre volta ao comportamento antigo (capa
+    genérica gerada automaticamente), sem regressão.
+
+    RISCO RESIDUAL: só testado em 1 livro real, 100% escaneado (todas as
+    páginas são imagem inteira). Não testado em livro de texto nativo
+    com imagem de capa real embutida como imagem parcial da página — se
+    existir um livro assim, o critério de proporção pode rejeitar
+    corretamente (imagem parcial não bate com a proporção da página
+    inteira) mas isso significa NENHUMA capa extraída nesse caso, não um
+    falso positivo — comportamento seguro por padrão."""
+    pagina = doc.load_page(0)
+    rect = pagina.rect
+    if rect.width <= 0 or rect.height <= 0:
+        return None
+    proporcao_pagina = rect.width / rect.height
+
+    for img in pagina.get_images(full=True):
+        xref = img[0]
+        base = doc.extract_image(xref)
+        largura, altura = base["width"], base["height"]
+        if altura <= 0:
+            continue
+        proporcao_imagem = largura / altura
+        if abs(proporcao_imagem - proporcao_pagina) / proporcao_pagina > TOLERANCIA_PROPORCAO_CAPA:
+            continue
+        capa_path = destino_dir / f"capa.{base['ext']}"
+        capa_path.write_bytes(base["image"])
+        return capa_path
+    return None
+
+
+def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[str], Path | None]:
     """Passo 1/2: percorre o PDF uma única vez (render+OCR por página),
     grava o texto bruto de cada página em cache_path (uma linha JSON por
     página — streaming, nunca acumula texto de todas as páginas em RAM),
     identifica as linhas iniciais repetidas (cabeçalho de seção) e detecta
-    o título de capítulo de cada página, se houver.
+    o título de capítulo de cada página, se houver. Também tenta extrair
+    a capa real da 1ª página (ver `extrair_capa`) — retorna
+    (cabeçalhos, caminho da capa extraída ou None).
 
     O título detectado de uma página CONTINUA contando na análise de
     frequência de cabeçalho abaixo (não é excluído do texto usado para
@@ -724,6 +781,8 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> set[str]:
     total = doc.page_count
     matriz_zoom = pymupdf.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
     contador: Counter = Counter()
+
+    capa_path = extrair_capa(doc, cache_path.parent)
 
     with cache_path.open("w", encoding="utf-8") as cache:
         for i in range(total):
@@ -747,7 +806,7 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> set[str]:
 
     doc.close()
 
-    return agrupar_cabecalhos(contador, total)
+    return agrupar_cabecalhos(contador, total), capa_path
 
 
 def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -> list[str]:
@@ -835,7 +894,7 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
         out.write(HTML_FOOTER)
 
 
-def convert_to_ebook(html_path: Path, saida: Path, titulo: str, autor: str) -> None:
+def convert_to_ebook(html_path: Path, saida: Path, titulo: str, autor: str, capa_path: Path | None) -> None:
     print(f"Compilando e-book final ({saida.suffix}) com Calibre...")
     cmd = [
         "ebook-convert",
@@ -853,6 +912,8 @@ def convert_to_ebook(html_path: Path, saida: Path, titulo: str, autor: str) -> N
         "--page-breaks-before", "//h:section[@class='pagina']",
         "--input-encoding", "utf-8",
     ]
+    if capa_path is not None:
+        cmd += ["--cover", str(capa_path)]
     subprocess.run(cmd, check=True)
 
 
@@ -875,9 +936,9 @@ def main() -> None:
         html_path = tmp_dir / "livro.html"
         cache_path = tmp_dir / "paginas.jsonl"
 
-        cabecalhos = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
+        cabecalhos, capa_path = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
         construir_html(cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos)
-        convert_to_ebook(html_path, args.saida, titulo=titulo, autor=args.autor)
+        convert_to_ebook(html_path, args.saida, titulo=titulo, autor=args.autor, capa_path=capa_path)
 
     print(f"\nConcluído: {args.saida}")
 
