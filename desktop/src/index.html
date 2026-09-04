@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Foliant</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Foliant</h1>
+      <p class="subtitle">PDF &rarr; OCR &rarr; EPUB, offline</p>
+
+      <form id="form-conversao">
+        <label>
+          PDF de entrada
+          <div class="row">
+            <input id="pdf-entrada" type="text" readonly placeholder="Selecione um arquivo .pdf" />
+            <button type="button" id="btn-selecionar-pdf">Selecionar…</button>
+          </div>
+        </label>
+
+        <label>
+          Salvar EPUB como
+          <div class="row">
+            <input id="saida" type="text" readonly placeholder="Selecione onde salvar o .epub" />
+            <button type="button" id="btn-selecionar-saida">Selecionar…</button>
+          </div>
+        </label>
+
+        <label>
+          Título
+          <input id="titulo" type="text" placeholder="(opcional)" />
+        </label>
+
+        <label>
+          Autor
+          <input id="autor" type="text" value="Desconhecido" />
+        </label>
+
+        <label>
+          Idioma (código Tesseract)
+          <input id="lang" type="text" value="por" />
+        </label>
+
+        <button id="btn-converter" type="submit">Converter</button>
+      </form>
+
+      <pre id="log"></pre>
+    </main>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

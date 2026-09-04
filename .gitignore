@@ -18,3 +18,15 @@ saida/
 # documentação de uso (ver ARCHITECTURE.md/README.md).
 samples/*.pdf
 samples/CV_*
+
+# PyInstaller (artefatos de build do sidecar — gerados por
+# scripts/build-sidecar.sh, não versionados; ver ARCHITECTURE.md Fase 4)
+build/
+dist/
+foliant-core.spec
+
+# App desktop Tauri
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/
+desktop/src-tauri/gen/
