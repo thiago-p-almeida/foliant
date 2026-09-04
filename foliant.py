@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
 import shutil
 import statistics
@@ -55,6 +56,18 @@ from PIL import Image
 
 
 REQUIRED_BINARIES = ["tesseract", "ebook-convert"]
+
+# Fallback absoluto para o caso do PATH do processo não incluir
+# /usr/local/bin por algum motivo (ex.: app GUI empacotado herdando o
+# PATH mínimo do launchd em vez do PATH do shell interativo — ver
+# ARCHITECTURE.md, seção "Fase 4.3"). shutil.which() continua sendo a
+# checagem primária; isso só evita um falso negativo quando o binário
+# está instalado no lugar padrão documentado no topo deste arquivo, mas
+# não está visível no PATH herdado.
+CAMINHOS_ABSOLUTOS_FALLBACK = {
+    "tesseract": "/usr/local/bin/tesseract",
+    "ebook-convert": "/usr/local/bin/ebook-convert",
+}
 
 # DPI de renderização: trade-off qualidade de OCR x velocidade/RAM numa
 # CPU fraca. TESTADO E REVERTIDO: subir de 200 para 300 (e também 250,
@@ -79,7 +92,22 @@ RENDER_DPI = 200
 
 
 def check_dependencies() -> None:
-    faltando = [b for b in REQUIRED_BINARIES if shutil.which(b) is None]
+    faltando = []
+    for binario in REQUIRED_BINARIES:
+        if shutil.which(binario) is not None:
+            continue
+        caminho_fallback = CAMINHOS_ABSOLUTOS_FALLBACK.get(binario)
+        if caminho_fallback and Path(caminho_fallback).is_file():
+            # Achado no caminho conhecido mas não no PATH herdado do
+            # processo: adiciona o diretório ao PATH deste processo para
+            # que as chamadas seguintes (pytesseract, subprocess do
+            # ebook-convert) também consigam encontrá-lo, não só esta
+            # checagem.
+            diretorio = str(Path(caminho_fallback).parent)
+            if diretorio not in os.environ.get("PATH", "").split(os.pathsep):
+                os.environ["PATH"] = diretorio + os.pathsep + os.environ.get("PATH", "")
+            continue
+        faltando.append(binario)
     if faltando:
         print(
             "Erro: ferramentas ausentes no PATH: "
