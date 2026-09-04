@@ -306,6 +306,90 @@ JANELA_TITULO_LINHAS = 7
 # se houver uma linha forte de novo logo depois, nunca no final.
 TOLERANCIA_LINHA_FRACA_TITULO = 1
 
+# Recuo de linha (Tarefa B): uma linha OCRizada é tratada como INÍCIO de
+# parágrafo (recebe recuo, novo <p>) quando sua posição X (`left` do
+# image_to_data) excede a mediana de `left` de todas as linhas da PÁGINA
+# em mais que este delta, em pixels — não um valor absoluto fixo, porque
+# a margem absoluta varia entre livros/páginas (rotação/skew do scan).
+# Mediana da página (não um valor global do livro) para caber na
+# arquitetura de streaming (uma página em memória por vez).
+#
+# Calibrado com dados reais de 3 páginas (60, 200, 400) do livro de 903
+# páginas (PEREIRA) mais 1 página (30) de samples/001-080.pdf, e uma
+# estatística agregada de 1.379 linhas (40 páginas, mesmo livro de 903):
+# a distribuição de `left` é claramente bimodal — margem de continuação
+# concentrada ~40-43px (skew mínimo) a ~44-64px (samples/001-080.pdf,
+# página com leve rotação de scan), início de parágrafo concentrado
+# ~90-116px. No agregado de 1.379 linhas, o "vale" entre os dois
+# aglomerados fica nos buckets de 70-80px (2 linhas, praticamente vazio)
+# — ou seja, delta~35 (relativo à mediana ~40) cai bem no meio do vale,
+# com folga de ~15-20px para qualquer lado antes de tocar um dos dois
+# aglomerados reais. RISCO RESIDUAL: calibrado só neste livro de 903
+# páginas (fonte real do defeito relatado) mais uma página avulsa de
+# outro livro — não os 2 livros de calibração completos das Fases 2-3.
+# Ver ARCHITECTURE.md para a tabela completa e o script de pesquisa
+# (`scripts/pesquisa_recuo_estatistica.py`).
+#
+# CORREÇÃO REAL DURANTE A VALIDAÇÃO (não escondida — ver ARCHITECTURE.md,
+# Fase 4.4): os números acima vieram de renderizar+OCRizar essas páginas
+# via um script de pesquisa isolado, sem checar antes se o PDF de origem
+# (PEREIRA, 903 páginas) tinha texto nativo. Ele tem — `foliant.py` já
+# usa `pagina.get_text("text")` direto pra esse livro, sem OCR nenhum, o
+# que significa que corrigir só o caminho OCR (como a primeira versão
+# desta correção fez) não resolvia o defeito relatado NESSE livro
+# específico, embora o critério em si continue válido e testado para
+# livros genuinamente escaneados. Ver LIMIAR_RECUO_DELTA_PONTOS_NATIVO
+# abaixo para o critério equivalente do caminho nativo, calibrado com o
+# livro que de fato revelou o bug.
+LIMIAR_RECUO_DELTA_PX = 35
+
+# Sinal de gap vertical entre linhas (coordenada Y) TESTADO E DESCARTADO
+# como critério: mediana do gap para linhas de continuação (left<=60) foi
+# 23.3px vs. 28.1px para linhas de possível início de parágrafo — uma
+# diferença pequena demais, com distribuições fortemente sobrepostas
+# (min/max de -543.9 a 535.0 num dos dois grupos, incluindo artefatos de
+# layout de página como quebras de coluna/rodapé) — não seria um sinal
+# confiável mesmo combinado com o recuo. Não implementado.
+#
+# Sinal de pontuação final (frase anterior termina em . ? !) considerado
+# e também NÃO implementado como critério adicional: nas páginas reais
+# inspecionadas, todo início de parágrafo real já tinha o recuo físico
+# presente (mesmo o primeiro parágrafo após um subtítulo) — nenhum caso
+# real encontrado em que o recuo sozinho desse falso negativo. Adicionar
+# um segundo sinal sem um caso real que o justifique seria complexidade
+# não comprovada — revisitar se um contra-exemplo real aparecer.
+
+# Equivalente a LIMIAR_RECUO_DELTA_PX, mas para o caminho de texto NATIVO
+# — unidade diferente (pontos PDF, não pixels de render a 200 DPI), por
+# isso um valor separado, não o mesmo número reaproveitado.
+#
+# Calibrado com dados reais do livro PEREIRA (903 páginas, texto nativo
+# real — ver correção acima), 3 páginas (60, 200, 400), via
+# `pagina.get_text("dict")["blocks"][...]["lines"][...]["bbox"]`. Texto
+# nativo é MUITO mais limpo que OCR — sem ruído de scan/skew: margem de
+# continuação ficou em x0=15.0pt EXATO em toda linha de continuação
+# observada (nenhuma variação), início de parágrafo em x0=37.5pt EXATO
+# (delta=22.5pt, também sem variação). 10pt cai com folga entre os dois
+# valores exatos observados (0 e 22.5) — não precisa de mais margem
+# porque não há ruído de medição a considerar (coordenadas de PDF nativo
+# são exatas, diferente de bounding box de OCR).
+LIMIAR_RECUO_DELTA_PONTOS_NATIVO = 10
+
+# Override de tamanho de fonte para o caminho nativo (ver
+# `linhas_inicio_paragrafo`): subtítulos de seção no mesmo livro real
+# (ex. "▸3.11 Revisões externas") têm recuo MENOR que um parágrafo comum
+# (x0=19.5-24.75pt, delta de só 4.5-9.75pt da margem — abaixo do limiar
+# de recuo acima) mas fonte 1.3-1.5x maior que a mediana da página
+# (19.5-22.5pt contra corpo de 15pt) — sem este segundo sinal, esses
+# subtítulos seriam classificados como CONTINUAÇÃO pelo recuo sozinho e
+# ficariam colados ao parágrafo anterior. 1.3 fica abaixo da menor razão
+# real observada (1.3) com zero folga do lado de baixo — ok porque o
+# corpo de texto nesse livro nunca varia de tamanho por razões
+# tipográficas normais (toda linha de corpo observada tinha razão entre
+# 0.78 e 1.0 da mediana, nunca subindo). RISCO RESIDUAL: só 3 páginas de
+# um livro para calibrar isto — ver ARCHITECTURE.md.
+LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO = 1.3
+
 
 def detectar_titulo(linhas: list[tuple[str, float]]) -> tuple[str | None, int]:
     """Recebe linhas (texto, tamanho) em ordem de leitura (tamanho = altura
@@ -371,16 +455,28 @@ def detectar_titulo(linhas: list[tuple[str, float]]) -> tuple[str | None, int]:
     return " ".join(candidatos), fim + 1
 
 
-def extrair_linhas_nativas(pagina: "pymupdf.Page") -> list[tuple[str, float]]:
+def extrair_linhas_nativas(pagina: "pymupdf.Page") -> list[tuple[str, float, float]]:
     """Fonte (a) — PDF com texto nativo: uma linha por (texto, tamanho de
-    fonte médio dos spans da linha), via get_text("dict").
+    fonte médio dos spans da linha, posição X do início do bbox da
+    linha), via get_text("dict"). O `left` alimenta
+    `linhas_inicio_paragrafo()` (Tarefa B, recuo de linha) — ver
+    LIMIAR_RECUO_DELTA_PONTOS_NATIVO.
 
-    RISCO RESIDUAL: nenhum livro nativo real existe no projeto para
-    calibrar isso — os 3 arquivos de teste são 100% escaneados. Reusa o
-    mesmo LIMIAR_RAZAO_TITULO da fonte (b) por analogia, validado só
-    mecanicamente contra um PDF sintético (samples/sinteticos/
-    livro_sintetico.pdf). Ver ARCHITECTURE.md — não confiar sem
-    revalidar contra um PDF nativo real de livro."""
+    Validado com um livro nativo real (PEREIRA, "Artigos Científicos...",
+    903 páginas — ver ARCHITECTURE.md, Fase 4.4) depois que esse livro
+    revelou o defeito de recuo de linha original: ao contrário do que o
+    comentário antigo desta função dizia, ESTE projeto passou a ter um
+    PDF de texto nativo real assim que esse livro entrou como caso de
+    teste — a suposição anterior ("nenhum livro nativo existe") nunca
+    tinha sido reconferida antes de decidir o escopo da correção, o que
+    levou a corrigir só o caminho OCR numa primeira tentativa (documentado
+    como erro real e corrigido em ARCHITECTURE.md, não escondido).
+    LIMIAR_RAZAO_TITULO (chamador `detectar_titulo`) reusa o mesmo valor
+    calibrado pela fonte (b) por analogia — não recalibrado
+    especificamente para texto nativo, risco residual menor (título de
+    capítulo tem razão de tamanho tipicamente bem acima de qualquer
+    limiar razoável; ver LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO abaixo para um
+    limiar À PARTE, mais baixo, calibrado para subtítulos de seção)."""
     linhas = []
     d = pagina.get_text("dict")
     for bloco in d["blocks"]:
@@ -391,13 +487,20 @@ def extrair_linhas_nativas(pagina: "pymupdf.Page") -> list[tuple[str, float]]:
             if not texto.strip():
                 continue
             tamanhos_spans = [span["size"] for span in linha["spans"]]
-            linhas.append((texto, sum(tamanhos_spans) / len(tamanhos_spans)))
+            linhas.append((
+                texto,
+                sum(tamanhos_spans) / len(tamanhos_spans),
+                linha["bbox"][0],  # x0 do bbox da linha
+            ))
     return linhas
 
 
-def extrair_linhas_ocr(dados: dict) -> list[tuple[str, float]]:
+def extrair_linhas_ocr(dados: dict) -> list[tuple[str, float, int]]:
     """Fonte (b) — página escaneada: uma linha por (texto, altura média das
-    palavras da linha), reconstruída a partir de pytesseract.image_to_data().
+    palavras da linha, posição X da primeira palavra), reconstruída a
+    partir de pytesseract.image_to_data(). A posição X (`left`) alimenta
+    `linhas_inicio_paragrafo()` (Tarefa B, recuo de linha) — ver
+    LIMIAR_RECUO_DELTA_PX.
 
     Agrupa por (block_num, par_num, line_num) e ordena por essa MESMA
     chave — a ordem de leitura que o próprio Tesseract atribuiu
@@ -414,20 +517,93 @@ def extrair_linhas_ocr(dados: dict) -> list[tuple[str, float]]:
         if not texto_palavra.strip():
             continue
         chave = (dados["block_num"][i], dados["par_num"][i], dados["line_num"][i])
-        info = agrupado.setdefault(chave, {"palavras": [], "alturas": []})
+        info = agrupado.setdefault(chave, {"palavras": [], "alturas": [], "lefts": []})
         info["palavras"].append(texto_palavra)
         info["alturas"].append(dados["height"][i])
+        info["lefts"].append(dados["left"][i])
 
     linhas = []
     for chave in sorted(agrupado):
         info = agrupado[chave]
-        linhas.append((" ".join(info["palavras"]), sum(info["alturas"]) / len(info["alturas"])))
+        linhas.append((
+            " ".join(info["palavras"]),
+            sum(info["alturas"]) / len(info["alturas"]),
+            info["lefts"][0],  # left da primeira palavra da linha
+        ))
     return linhas
+
+
+def linhas_inicio_paragrafo(
+    linhas: list[tuple[str, float, float]],
+    limiar_delta: float,
+    limiar_razao_tamanho: float | None = None,
+) -> list[bool]:
+    """Para cada linha da página (texto, tamanho, left — na ordem de
+    leitura), decide se ela é o INÍCIO de um novo parágrafo (True, recebe
+    recuo) ou continuação da linha anterior (False, deve ser unida a
+    ela). Serve tanto o caminho OCR (`LIMIAR_RECUO_DELTA_PX`, em pixels
+    de render a 200 DPI) quanto o nativo
+    (`LIMIAR_RECUO_DELTA_PONTOS_NATIVO`, em pontos PDF — unidades
+    diferentes, por isso o limiar é parâmetro, não constante fixa aqui
+    dentro) — ver ARCHITECTURE.md, Fase 4.4, para a evidência real de
+    cada um.
+
+    Critério primário: posição X (`left`) da linha excede a mediana de
+    `left` de TODAS as linhas da página em mais que `limiar_delta`. A
+    mediana é recalculada por página (não por livro) para caber na
+    arquitetura de streaming — cada página já é processada isoladamente,
+    uma de cada vez.
+
+    Override 1 (mais forte, os dois caminhos): se a linha ANTERIOR
+    termina em hífen (quebra de palavra), a linha atual é SEMPRE
+    continuação, independente da posição X.
+
+    Override 2 (`limiar_razao_tamanho`, só passado no caminho nativo —
+    ver `extrair_texto_pagina`): subtítulos de seção no livro nativo real
+    usado para calibrar isto (PEREIRA, 903 páginas) têm um recuo MENOR
+    que o de um parágrafo comum (~4,5-9,75pt contra ~22,5pt de um
+    parágrafo real, ambos relativos à margem) mas fonte claramente maior
+    (razão 1,3-1,5x a mediana da página, contra ~1,0x do corpo) — sem
+    esse segundo sinal, um subtítulo seria classificado como CONTINUAÇÃO
+    pelo recuo sozinho e ficaria colado ao parágrafo anterior. Quando
+    `limiar_razao_tamanho` é dado e o tamanho da linha atual cruza esse
+    limiar, força início de parágrafo, ignorando o recuo.
+
+    A primeira linha da página não tem uma anterior para comparar —
+    marcada True (início) por padrão; `construir_html()` sobrescreve isso
+    de qualquer forma para a primeira linha que sobra após remover
+    título/cabeçalho de página (ver comentário lá)."""
+    if not linhas:
+        return []
+
+    lefts = [left for _, _, left in linhas]
+    mediana_left = statistics.median(lefts)
+    mediana_tamanho = (
+        statistics.median(tamanho for _, tamanho, _ in linhas)
+        if limiar_razao_tamanho is not None
+        else None
+    )
+
+    resultado = [True]
+    for idx in range(1, len(linhas)):
+        texto_anterior, _, _ = linhas[idx - 1]
+        _, tamanho_atual, left_atual = linhas[idx]
+        if texto_anterior.rstrip().endswith("-"):
+            resultado.append(False)
+        elif (
+            mediana_tamanho is not None
+            and mediana_tamanho > 0
+            and tamanho_atual >= mediana_tamanho * limiar_razao_tamanho
+        ):
+            resultado.append(True)
+        else:
+            resultado.append((left_atual - mediana_left) > limiar_delta)
+    return resultado
 
 
 def extrair_texto_pagina(
     doc: "pymupdf.Document", i: int, matriz_zoom: "pymupdf.Matrix", lang: str
-) -> tuple[str, str | None, int]:
+) -> tuple[str, str | None, int, list[bool]]:
     """Extrai o texto de uma página e detecta o título de capítulo (se
     houver): usa a camada de texto nativa se existir, senão renderiza e
     faz OCR. Libera pixmap/imagem antes de retornar — nunca acumula mais
@@ -440,23 +616,43 @@ def extrair_texto_pagina(
     equivalência entre o texto reconstruído e o image_to_string() antigo.
 
     Retorna (texto, título detectado ou None, nº de linhas consumidas
-    pelo título)."""
+    pelo título, lista de "linha é início de parágrafo" alinhada 1:1 com
+    texto.splitlines()).
+
+    Recuo de linha (Tarefa B) se aplica aos DOIS caminhos, com critérios
+    calibrados separadamente (unidades diferentes — pixels de render no
+    OCR, pontos PDF no nativo; ver LIMIAR_RECUO_DELTA_PX e
+    LIMIAR_RECUO_DELTA_PONTOS_NATIVO). No caminho nativo, `texto` é
+    reconstruído a partir das mesmas linhas usadas para a classificação
+    (`"\\n".join(...)`), não mais de `pagina.get_text("text")` direto —
+    confirmado byte-idêntico entre as duas formas em 5 páginas reais
+    (incluindo página vazia e última página do livro) antes de trocar,
+    ver ARCHITECTURE.md. A troca é necessária para garantir alinhamento
+    1:1 entre `texto.splitlines()` e `inicio_paragrafo`."""
     pagina = doc.load_page(i)
     texto_nativo = pagina.get_text("text").strip()
 
     if texto_nativo:
-        linhas = extrair_linhas_nativas(pagina)
-        texto = texto_nativo
-    else:
-        pixmap = pagina.get_pixmap(matrix=matriz_zoom)
-        img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
-        dados = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
-        img.close()
-        linhas = extrair_linhas_ocr(dados)
-        texto = "\n".join(texto_linha for texto_linha, _ in linhas)
+        linhas_nativas = extrair_linhas_nativas(pagina)
+        texto = "\n".join(texto_linha for texto_linha, _, _ in linhas_nativas)
+        inicio_paragrafo = linhas_inicio_paragrafo(
+            linhas_nativas,
+            limiar_delta=LIMIAR_RECUO_DELTA_PONTOS_NATIVO,
+            limiar_razao_tamanho=LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO,
+        )
+        titulo, n_linhas_titulo = detectar_titulo([(t, a) for t, a, _ in linhas_nativas])
+        return texto, titulo, n_linhas_titulo, inicio_paragrafo
 
-    titulo, n_linhas_titulo = detectar_titulo(linhas)
-    return texto, titulo, n_linhas_titulo
+    pixmap = pagina.get_pixmap(matrix=matriz_zoom)
+    img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+    dados = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
+    img.close()
+    linhas_ocr = extrair_linhas_ocr(dados)
+    texto = "\n".join(texto_linha for texto_linha, _, _ in linhas_ocr)
+    inicio_paragrafo = linhas_inicio_paragrafo(linhas_ocr, limiar_delta=LIMIAR_RECUO_DELTA_PX)
+
+    titulo, n_linhas_titulo = detectar_titulo([(t, a) for t, a, _ in linhas_ocr])
+    return texto, titulo, n_linhas_titulo, inicio_paragrafo
 
 
 def agrupar_cabecalhos(contador: Counter, total_paginas: int) -> set[str]:
@@ -531,8 +727,13 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> set[str]:
 
     with cache_path.open("w", encoding="utf-8") as cache:
         for i in range(total):
-            texto, titulo, n_linhas_titulo = extrair_texto_pagina(doc, i, matriz_zoom, lang)
-            registro = {"texto": texto, "titulo": titulo, "n_linhas_titulo": n_linhas_titulo}
+            texto, titulo, n_linhas_titulo, inicio_paragrafo = extrair_texto_pagina(doc, i, matriz_zoom, lang)
+            registro = {
+                "texto": texto,
+                "titulo": titulo,
+                "n_linhas_titulo": n_linhas_titulo,
+                "inicio_paragrafo": inicio_paragrafo,
+            }
             cache.write(json.dumps(registro) + "\n")
 
             for linha in texto.splitlines():
@@ -549,12 +750,41 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> set[str]:
     return agrupar_cabecalhos(contador, total)
 
 
+def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -> list[str]:
+    """Uma linha crua (OCR ou texto nativo) por linha física da página
+    produz um <p> por linha — mesmo quando é continuação da frase
+    anterior, causando o "zigue-zague" visual do text-indent aplicado a
+    toda linha (Tarefa B). Une linhas de continuação
+    (`inicio_paragrafo[i] is False`) à string do parágrafo em construção;
+    só linhas marcadas True iniciam um <p> novo.
+
+    `limpar_linha()` já deve ter rodado em cada linha ANTES desta função
+    (ver chamador) — não depois: achado real em samples/001-080.pdf
+    (página com bloco de citação) onde um marcador decorativo ("*") se
+    repete no início de CADA linha física do bloco, não só da primeira.
+    Limpar essas linhas já unidas removeria só o marcador da primeira, e
+    limpar cada linha crua isoladamente ANTES de unir remove o marcador
+    de todas — por isso a ordem importa e a limpeza tem que ser por
+    linha, antes da fusão."""
+    paragrafos: list[str] = []
+    for l, novo in zip(linhas, inicio_paragrafo):
+        if not l:
+            continue
+        if novo or not paragrafos:
+            paragrafos.append(l)
+        elif paragrafos[-1].endswith("-"):
+            paragrafos[-1] = paragrafos[-1][:-1] + l
+        else:
+            paragrafos[-1] = paragrafos[-1] + " " + l
+    return paragrafos
+
+
 def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str]) -> None:
     """Passo 2/2: lê o cache de texto por página (streaming, sem OCR novo)
     e escreve o HTML final, removendo o cabeçalho de seção repetido
     (quando é a primeira linha da página), promovendo o título de
-    capítulo detectado (se houver) para <h2>, e limpando o ruído
-    decorativo de OCR."""
+    capítulo detectado (se houver) para <h2>, limpando o ruído decorativo
+    de OCR e unindo linhas de continuação em parágrafos reais (Tarefa B)."""
     print("Passo 2/2: montando HTML a partir do cache...")
 
     with cache_path.open(encoding="utf-8") as cache, html_path.open("w", encoding="utf-8") as out:
@@ -565,18 +795,34 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
             texto = registro["texto"]
             titulo_pagina = registro["titulo"]
             n_linhas_titulo = registro["n_linhas_titulo"]
+            inicio_paragrafo = registro["inicio_paragrafo"]
 
-            linhas = [l.strip() for l in texto.splitlines() if l.strip()]
+            # mantém texto e inicio_paragrafo em lockstep ao descartar
+            # linha vazia — não confiar que já vêm alinhados 1:1 sem checar.
+            pares = [(l.strip(), b) for l, b in zip(texto.splitlines(), inicio_paragrafo) if l.strip()]
+            linhas = [l for l, _ in pares]
+            inicio_paragrafo = [b for _, b in pares]
 
             html_titulo = ""
             if titulo_pagina and n_linhas_titulo:
                 linhas = linhas[n_linhas_titulo:]
+                inicio_paragrafo = inicio_paragrafo[n_linhas_titulo:]
                 html_titulo = f"<h2>{html.escape(limpar_linha(titulo_pagina))}</h2>\n"
 
             if linhas and normalizar_linha(linhas[0]) in cabecalhos:
                 linhas = linhas[1:]
+                inicio_paragrafo = inicio_paragrafo[1:]
 
-            paragrafos = "".join(f"<p>{html.escape(limpar_linha(l))}</p>\n" for l in linhas)
+            # a linha que sobrar no topo, depois de remover título/cabeçalho,
+            # é sempre início de página — force True mesmo que o valor
+            # pré-calculado (relativo à linha anterior ORIGINAL, já
+            # removida) dissesse outra coisa.
+            if inicio_paragrafo:
+                inicio_paragrafo[0] = True
+
+            linhas_limpas = [limpar_linha(l) for l in linhas]
+            paragrafos_texto = unir_linhas_em_paragrafos(linhas_limpas, inicio_paragrafo)
+            paragrafos = "".join(f"<p>{html.escape(p)}</p>\n" for p in paragrafos_texto if p.strip())
 
             out.write(f'<section class="pagina" id="pg-{i+1}">\n')
             out.write(html_titulo)
