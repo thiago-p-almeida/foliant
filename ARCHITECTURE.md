@@ -2175,3 +2175,275 @@ PEREIRA 903pg), agora também confirmada num livro nativo estrangeiro.
 Nenhuma das duas foi implementada nesta rodada — inspeção, não correção,
 conforme escopo definido no meta-prompt desta tarefa.
 
+## Robustez das heurísticas de texto para português + inglês (2026-09-04)
+
+Tarefa de correção (não mais inspeção), motivada pelos 2 achados da
+inspeção acima. Escopo reformulado: não é "escolher o idioma certo pro
+Tesseract" (já investigado e rebaixado de prioridade — livros
+nativos/early-release quase não passam por OCR), é robustez das
+heurísticas de TEXTO (clustering de cabeçalho/título) a português E
+inglês, já que o problema afeta texto já corretamente extraído.
+
+### Passo 0 — baseline real desta sessão, antes de qualquer mudança
+
+Rodado o pipeline ATUAL (sem nenhuma mudança desta tarefa ainda) nos 3
+livros de calibração em português, salvando `.epub`/logs como baseline
+desta rodada específica — não reaproveitado nenhum resultado de sessão
+anterior, mesmo documentado, para garantir que a comparação é contra o
+estado real e atual do código:
+
+| Livro | TOC gerado | Confere com histórico? |
+|---|---|---|
+| `samples/001-080.pdf` (80p) | 8 entradas | Sim (Fase 3) |
+| `samples/livro_completo_208pg.pdf` (208p) | 26 entradas | Sim (Fase 3) |
+| PEREIRA (903p) | 28 entradas | Sim (Fase 4.5) |
+
+### Parte 1 — stopwords PT+EN no clustering de similaridade
+
+**Implementado**: `_STOPWORDS_CABECALHO` dividida em
+`_STOPWORDS_CABECALHO_PT` (lista original, inalterada) e
+`_STOPWORDS_CABECALHO_EN` (18 palavras funcionais comuns em inglês —
+"the", "a", "an", "of", "to", "and", "or", "in", "on", "for", "is",
+"are", "this", "that", "with", "as", "by", "at"), unidas por `|`.
+
+**Confirmado por simulação e depois pela execução real** (não só teoria)
+contra o par que motivou a correção:
+
+| Par (Cluster 1, FDE) | Similaridade antes | Similaridade depois |
+|---|---|---|
+| `"This book provides a snapshot..."` vs. `"Fundamentals of Data Engineering"` | 0,75 (cruzava o limiar) | **0,667** (abaixo do limiar) |
+
+Revalidado rodando `primeira_passada()` real (não uma função isolada)
+contra o PDF do FDE com o código corrigido: o cluster que continha essas
+duas frases não existe mais — `"This book provides a snapshot..."`
+aparece agora como singleton (`contagem=1`), `"Fundamentals of Data /
+Fundamentals of Data Engineering"` como outro singleton de `contagem=2`,
+nenhum dos dois cruzando o mínimo de 3. **Confirmado, não apenas
+simulado**: a frase real da introdução do livro deixa de ser removida do
+EPUB.
+
+### Parte 1.2 — Cluster 2 investigado, correção NÃO implementada (falta de calibração)
+
+Recalculada a similaridade do Cluster 2 (duas legendas de figura
+diferentes — Figura 2-1 e Figura 2-7 — mais um subtítulo solto,
+"Undercurrents") com as stopwords em inglês já somadas: **0,80** — ainda
+acima do limiar de 0,70. A união de stopwords sozinha não resolve este
+caso porque a colisão aqui não vem de palavras funcionais contaminando o
+cálculo, vem de vocabulário de conteúdo genuinamente compartilhado
+("figure", "data", "engineering", "undercurrents" aparecendo em
+legendas de figura diferentes do mesmo capítulo).
+
+Investigado um sinal adicional candidato: **razão de tamanho entre os
+dois conjuntos de palavras**. O par de truncamento OCR real já calibrado
+na Fase 2 (`"como encaminhar"` vs. `"como encaminhar uma pesquisa"`) tem
+razão de tamanho 2,0 (um conjunto bem menor que o outro — perfil
+esperado de truncamento); o Cluster 2 tem razão 1,2 (conjuntos quase do
+mesmo tamanho — não tem o perfil de um fragmento truncado). Essa
+diferença é real e mensurável, mas **é baseada em só 1 exemplo de cada
+categoria** — não o suficiente para calibrar um limiar de razão de
+tamanho sem risco de overfitting a essa única amostra (mesma disciplina
+já aplicada a outros limiares deste projeto, ex. a colisão "x*"/"se" da
+Fase 4.5).
+
+> **Decisão**: não implementar uma correção para o Cluster 2 nesta
+> rodada. Registrado como risco residual conhecido, com direção de
+> correção concreta (sinal de razão de tamanho, ou exigir 1 repetição
+> exata da string normalizada) para quando houver mais exemplos reais
+> desse padrão específico.
+
+### Parte 1.3 — varredura do arquivo por outras heurísticas só-português
+
+Revisado todo `foliant.py` em busca do mesmo padrão (lista/regra
+hardcoded assumindo português). `_RE_RUIDO_INICIAL` (ruído decorativo),
+`normalizar_linha()` e `similaridade_cabecalho()` são mecanicamente
+agnósticos a idioma (classes de caracteres e coeficiente de conjunto,
+não palavras específicas) — `_STOPWORDS_CABECALHO` era a única lista de
+palavras hardcoded no arquivo.
+
+**Achado adicional, fora do escopo do clustering, mas do mesmo padrão
+geral ("pressuposto de português nunca declarado")**: `HTML_HEADER`
+(linha ~122) tem `<html lang="pt-BR">` fixo, independente do idioma real
+do conteúdo do livro. Para o FDE (livro em inglês), o EPUB gerado
+declara `lang="pt-BR"` no HTML — metadado de acessibilidade incorreto
+(leitores de tela usam esse atributo para escolher regras de
+pronúncia/hifenização). **Não corrigido nesta rodada**: a forma correta
+de preencher esse atributo dependeria de detecção de idioma do livro
+(a própria Parte 2 do backlog de UI/UX, ainda não implementada) — mapear
+o `--lang` do Tesseract (código de idioma do MOTOR de OCR, não
+necessariamente o idioma do livro) para o atributo HTML seria uma
+correção parcial e potencialmente enganosa. Registrado como risco
+residual conhecido, não implementado.
+
+### Parte 2 — supressão de título em página 100%-imagem: investigado e ABANDONADO (reversão de recomendação anterior)
+
+A inspeção anterior (seção acima) recomendava suprimir a detecção de
+título em páginas identificadas como "100% imagem" (native vazio +
+`get_images()` cobrindo quase toda a página), usando o mesmo sinal que
+`extrair_capa()` (Fase 4.5) já usa. **Essa recomendação foi testada
+contra mais dados reais nesta rodada e não se sustentou** — registrado
+aqui como reversão explícita, não escondido.
+
+**Achado que invalida a recomendação anterior**: a página 1 do FDE (a
+CAPA do livro, onde o título `"Fundamentals of Data Engineering"` é
+**corretamente** detectado e desejado) também é 100% imagem — cobertura
+de imagem de **100%** (mais alta até que a página do gráfico defeituoso,
+58%). Qualquer limiar de cobertura de imagem que suprimisse a página do
+gráfico também suprimiria essa detecção correta da capa.
+
+| Página | Cobertura de imagem | Classificação desejada |
+|---|---|---|
+| FDE pg-1 (capa) | **100%** | preservar (título correto) |
+| FDE pg-28 (gráfico, defeito conhecido) | 58% | suprimir |
+| Gil pg-106 (fluxograma, defeito conhecido) | 166%* | suprimir |
+
+\* >100% porque o retângulo da imagem, num livro 100% escaneado,
+frequentemente extrapola levemente a caixa de corte da página.
+
+**Segundo sinal testado, também não generaliza**: volume de texto OCR
+(caracteres/palavras reconhecidos) e confiança média do OCR (`conf` do
+Tesseract). Separam bem o caso do FDE (86 caracteres, confiança 52,7 —
+bem abaixo do normal) mas **não** o caso já conhecido do Gil: a página
+do fluxograma tem volume de texto (1089 caracteres, 171 palavras) e
+confiança (94,2) comparáveis a uma página de prosa real (pg-21: 1496
+caracteres, confiança 95,8) — o Tesseract lê os rótulos internos do
+diagrama como palavras reais, com confiança alta, só que semanticamente
+sem sentido (não é ruído de baixa confiança, é leitura "correta" de
+conteúdo decorativo).
+
+| Página | Volume (chars) | Confiança OCR média | Classificação |
+|---|---|---|---|
+| Gil pg-21 (prosa real) | 1496 | 95,8 | preservar |
+| Gil pg-106 (fluxograma, defeito) | 1089 | **94,2** | suprimir (mas sinal não separa) |
+| FDE pg-1 (capa, correto) | — (100% imagem) | 91,6 | preservar |
+| FDE pg-28 (gráfico, defeito) | 86 | **52,7** | suprimir |
+
+**Conclusão**: os dois casos reais conhecidos de "legenda corrompida
+promovida a título" (Gil pg-106, FDE pg-28) **não compartilham o mesmo
+perfil de sinal** — superficialmente parecem o mesmo padrão (página de
+imagem cheia, título espúrio), mas ao medir com dado real, um é
+"conteúdo semanticamente errado mas com alta confiança/volume de OCR" e
+o outro é "conteúdo de baixíssima confiança/volume". Nenhum dos 3 sinais
+testados (cobertura de imagem, volume de texto, confiança OCR) separa os
+2 casos reais sem arriscar suprimir detecções corretas (a capa do FDE,
+ou títulos reais de páginas escaneadas normais do Gil/PEREIRA — TODA
+página desses livros 100%-escaneados também é "imagem cobrindo a
+página").
+
+> **Decisão, análoga à Fase 4.5 ("investigado e abandonado")**: não
+> implementada nenhuma supressão de título por sinal estrutural. Os 2
+> casos conhecidos continuam sem correção — mesmo estado de antes desta
+> rodada, sem regressão (nunca foram suprimidos, continuam não sendo).
+> Não reabrir com os mesmos 3 sinais (cobertura de imagem, volume de
+> texto, confiança OCR) sem um sinal novo que separe os 2 casos reais
+> conhecidos sem colidir com a capa do FDE ou com os títulos corretos
+> dos livros 100%-escaneados.
+
+### Validação final (Passo 0 → depois da correção de stopwords, 4 livros)
+
+Comparado o cluster de cabeçalho gerado por `primeira_passada()` (função
+de produção, mesma chamada que `main()` usa) antes/depois da correção de
+stopwords, nos 3 livros PT (contra o baseline do Passo 0) e no FDE
+(contra a análise já registrada na inspeção anterior):
+
+| Livro | Diff de clusters | Impacto real |
+|---|---|---|
+| `samples/001-080.pdf` (80p) | **zero diferença** | nenhum |
+| `samples/livro_completo_208pg.pdf` (208p) | **zero diferença** | nenhum |
+| PEREIRA (903p) | 1 cluster dividido em 2 (`contagem=2` → dois de `contagem=1`) | **nenhum** — os dois ficam abaixo do mínimo (9) nos dois casos; a divisão é uma correção colateral (as duas frases — "American Journal of Medicine" e "New England Journal of Medicine" — são nomes de periódicos DIFERENTES que não deveriam ter sido agrupados, mesmo padrão de colisão por vocabulário genérico já documentado no FDE) |
+| FDE (210p, inglês) | Cluster 1 resolvido (confirmado); Cluster 2 inalterado (esperado); **1 NOVO falso positivo introduzido** | ver abaixo |
+
+**Pergunta direta que precisa de resposta direta: o mecanismo que criou
+o novo falso positivo no FDE (remover palavra compartilhada pode
+aumentar a razão de contenção) foi testado em português também, ou só
+apareceu por acaso no livro em inglês?** Testado nos 3 — o diff da linha
+acima não é um diff só dos clusters marcados como cabeçalho, é um diff
+do **arquivo de clusters inteiro** (toda linha, marcada ou não) de cada
+livro. "Zero diferença" em 80p/208p é uma prova direta, não uma
+ausência de teste: se nenhuma linha do relatório mudou, nenhuma
+comparação de similaridade teve resultado alterado — o que só é
+possível se nenhuma linha desses 2 livros contém, como palavra
+reconhecida, nenhum dos 18 tokens em inglês agora tratados como
+stopword. O mecanismo não teve nenhuma pré-condição para disparar
+nesses 2 livros.
+
+No PEREIRA, a pré-condição ocorreu exatamente 1 vez (a palavra "of" nos
+dois nomes de periódico em inglês citados na bibliografia em
+português) — e nesse caso real, o efeito foi o oposto do problema do
+FDE: separou dois clusters que não deveriam estar juntos, sem criar
+nenhum cabeçalho falso novo (confirmado: o único cluster já marcado
+`[CABEÇALHO]` no PEREIRA é idêntico, char a char, antes e depois).
+
+**O que isso não prova**: que o mecanismo nunca vai acontecer num livro
+em português. PEREIRA — um livro sobre como publicar artigos
+científicos, com nomes de periódico e termos técnicos em inglês na
+bibliografia — é justamente o perfil mais suscetível dos 3 livros PT
+testados, e mesmo nele só 1 de ~578 clusters foi afetado, por acaso de
+forma benigna. Um livro em português com mais palavras em inglês
+espalhadas pelo corpo do texto (não só isoladas na bibliografia)
+teria mais chances de expor o mesmo padrão observado no FDE. **Risco
+residual real, testado contra 3 livros reais em português sem
+reprodução do problema, não uma prova geral de que não pode
+acontecer.**
+
+**Achado real, não hipotético — a correção de stopwords introduziu um
+novo falso positivo no FDE**: o cluster `"oreilly"` (antes `contagem=2`,
+abaixo do limiar, sem efeito no EPUB) cresceu para `contagem=3` e passou
+a cruzar o limiar. Origem confirmada de 2 dos 3 membros: pg-50 (uma nota
+de rodapé, `"4 What Is Data Engineering? (O'Reilly 2020)..."`) e pg-52
+(um **cabeçalho de seção real**, `"What Is the Data Engineering
+Lifecycle?"`) — este último passa a ser removido do corpo da página 52,
+uma perda de conteúdo estrutural real, do mesmo tipo dos Clusters 1/2.
+
+**Mecanismo confirmado por cálculo direto** (não suposição): remover uma
+palavra que estava presente nos DOIS lados de uma comparação de
+contenção pode aumentar a razão, não só diminuir — porque o denominador
+(`min(|A|,|B|)`) encolhe junto com o numerador, e pode encolher
+proporcionalmente mais:
+
+| | Similaridade sem stopwords EN | Similaridade com stopwords EN |
+|---|---|---|
+| `"...What Is Data Engineering? (O'Reilly 2020)..."` vs. `"What Is the Data Engineering Lifecycle?"` | 0,667 (abaixo do limiar) | **0,75** (cruza o limiar) |
+
+Remover `"is"` (presente nos dois lados) e `"the"` (só no lado B)
+encolheu o conjunto B de 6 para 4 palavras — proporcionalmente mais que
+o conjunto A (de 6 para 5) — subindo a razão de contenção acima do
+limiar.
+
+> **Decisão sobre manter ou reverter a correção de stopwords, dado este
+> efeito colateral real**: mantida. Razão: o problema original (ausência
+> de stopwords em inglês) é um bug estrutural que afeta QUALQUER texto
+> em inglês processado pelo pipeline, não só os 2 casos já conhecidos —
+> reverter deixaria esse problema geral sem solução. O efeito colateral
+> encontrado é 1 caso concreto novo, da mesma categoria de risco já
+> aceita neste projeto (limiares de contenção por conjunto de palavras
+> têm casos-limite que podem virar em qualquer direção conforme o
+> vocabulário do livro) — mesmo padrão de troca aceita na Fase 4.4 (a
+> fusão de parágrafos corrigiu o caso comum e introduziu uma regressão
+> conhecida e documentada em listas numeradas, sem reverter a correção
+> geral). Resultado líquido: 1 falso positivo corrigido (Cluster 1), 1
+> conhecido e não corrigido por falta de calibração (Cluster 2), 1 novo
+> encontrado e documentado (oreilly/lifecycle) — de 2 falsos positivos
+> confirmados antes desta rodada para 2 depois, mas o bug ESTRUTURAL
+> (stopwords só-português) que motivou a tarefa está corrigido, o que
+> era o objetivo real desta rodada.
+
+### Limitações conhecidas
+
+- Cluster 2 (legendas de figura com vocabulário compartilhado) e o novo
+  cluster oreilly/lifecycle (nota de rodapé + cabeçalho de seção com
+  vocabulário compartilhado) continuam sem correção — mesma categoria de
+  risco, ainda sem sinal calibrado que os resolva sem mais dados reais.
+- `<html lang="pt-BR">` continua fixo no HTML gerado, independente do
+  idioma real do livro — metadado de acessibilidade incorreto para
+  livros não-portugueses, não corrigido nesta rodada.
+- A supressão de título por página-100%-imagem foi tentada com 3 sinais
+  diferentes (cobertura de imagem, volume de texto, confiança OCR) e
+  nenhum generaliza aos 2 casos reais conhecidos sem risco de regressão
+  — ver seção "Parte 2" acima para os números completos. Não reabrir com
+  os mesmos 3 sinais sem um dado novo.
+- `_STOPWORDS_CABECALHO_EN` (18 palavras) foi escolhida por
+  conhecimento geral de inglês (artigos, preposições, conjunções
+  comuns), não calibrada palavra a palavra contra um corpus — mesmo
+  padrão de "generaliza por construção, mas amostra de validação
+  estreita" já usado para outros limiares deste projeto. Só 1 livro em
+  inglês existe no projeto para validar.

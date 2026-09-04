@@ -208,10 +208,33 @@ _RE_NORMALIZA = re.compile(r'[^\w\sÀ-ÿ]')
 # Palavras funcionais muito comuns nesses cabeçalhos ("Como classificar as
 # pesquisas?", "Como encaminhar uma pesquisa?") que não ajudam a distinguir
 # um cabeçalho do outro — removidas antes de comparar similaridade.
-_STOPWORDS_CABECALHO = frozenset({
+#
+# PRESSUPOSTO QUE FICOU IMPLÍCITO ATÉ SER EXPOSTO POR DADO REAL: esta
+# lista só cobria português até a inspeção do 1º livro de teste em
+# inglês (Fundamentals of Data Engineering, 210 páginas, ver
+# ARCHITECTURE.md). Sem stopwords em inglês, "of"/"the"/"to"/"this"/
+# "and" sobreviviam em palavras_conteudo() como se fossem palavras de
+# conteúdo — inflando a similaridade de contenção entre frases sem
+# relação real, só por compartilharem vocabulário temático genérico do
+# livro. Achado real, não hipotético: duas frases de páginas diferentes
+# ("This book provides a snapshot of data engineering today..." vs.
+# "Fundamentals of Data Engineering") davam similaridade 0.75 (cruzava
+# LIMIAR_SIMILARIDADE=0.70) só por "of"/"data"/"engineering" contarem
+# como conteúdo — a linha de cabeçalho da capa acabou sendo tratada como
+# repetida na introdução, removendo uma frase real do EPUB (confirmado
+# por diff do HTML gerado). Confirmado por simulação direta com este
+# mesmo código, antes de adicionar as stopwords em inglês: removendo
+# manualmente "of"/"the"/"to"/"this" do cálculo, a similaridade cai para
+# 0.667 — abaixo do limiar, não teria clusterizado.
+_STOPWORDS_CABECALHO_PT = frozenset({
     "como", "a", "as", "o", "os", "um", "uma", "de", "e", "que",
     "do", "da", "dos", "das", "em", "para",
 })
+_STOPWORDS_CABECALHO_EN = frozenset({
+    "the", "a", "an", "of", "to", "and", "or", "in", "on", "for",
+    "is", "are", "this", "that", "with", "as", "by", "at",
+})
+_STOPWORDS_CABECALHO = _STOPWORDS_CABECALHO_PT | _STOPWORDS_CABECALHO_EN
 
 
 def palavras_conteudo(normalizada: str) -> frozenset[str]:

@@ -1139,3 +1139,114 @@ simulada e confirmada, pronta para implementação numa rodada futura
 dedicada — não aplicada agora por decisão explícita de manter esta
 tarefa como inspeção pura.
 
+## Robustez das heurísticas de texto para português + inglês (2026-09-04)
+
+Ver `ARCHITECTURE.md` para o raciocínio completo, tabelas de evidência e
+as duas reversões de hipótese que aconteceram durante esta tarefa. Aqui,
+resumo acionável.
+
+- [x] **Passo 0 — baseline real capturado antes de qualquer mudança**,
+  não reaproveitando resultados de sessões anteriores: `.epub`/logs dos
+  3 livros de calibração em português salvos com o código desta sessão,
+  antes de qualquer edição. TOC de cada um confere com o histórico
+  (8/26/28 entradas) — confirma que o ponto de partida desta tarefa é o
+  mesmo estado já validado, não uma suposição.
+
+- [x] **Parte 1 — stopwords PT+EN implementadas.** `_STOPWORDS_CABECALHO`
+  dividida em PT (original) + EN (18 palavras funcionais comuns).
+  Confirmado por execução real (não só simulação) que o Cluster 1 do FDE
+  (a frase de introdução vs. o título da capa) não cluster mais —
+  similaridade caiu de 0,75 para 0,667. A frase real
+  `"This book provides a snapshot of data engineering today..."` deixa
+  de ser removida do EPUB.
+
+- [x] **Parte 1.2 — Cluster 2 investigado, correção NÃO implementada.**
+  Similaridade continua em 0,80 mesmo com stopwords EN (a colisão é por
+  vocabulário de conteúdo genuinamente compartilhado entre duas legendas
+  de figura diferentes, não por palavras funcionais). Sinal candidato
+  identificado (razão de tamanho entre os conjuntos de palavras: 2,0 no
+  único par de truncamento OCR real já calibrado vs. 1,2 neste caso) mas
+  baseado em só 1 exemplo de cada categoria — não implementado por falta
+  de calibração, registrado como risco residual com direção concreta.
+
+- [x] **Parte 1.3 — varredura do arquivo por outras heurísticas
+  só-português.** Confirmado que só `_STOPWORDS_CABECALHO` tinha esse
+  problema entre as funções de clustering/normalização. Achado adicional
+  fora do escopo do clustering, mesmo padrão geral: `<html lang="pt-BR">`
+  fixo no HTML gerado, independente do idioma real do livro — não
+  corrigido nesta rodada (depende de detecção de idioma, ainda não
+  implementada), registrado como risco residual.
+
+- [x] **Parte 2 — supressão de título em página 100%-imagem: investigada
+  e ABANDONADA, revertendo a recomendação da inspeção anterior.** A
+  recomendação anterior (usar "página é 100% imagem" como sinal) foi
+  testada contra mais dados reais e **falsificada**: a página 1 do FDE
+  (a capa, onde o título é corretamente detectado) também é 100% imagem
+  — cobertura de 100%, mais alta que a própria página do gráfico
+  defeituoso (58%). Um segundo sinal (volume de texto/confiança OCR)
+  também testado: separa o caso do FDE mas não o do Gil (a página do
+  fluxograma tem volume e confiança de OCR comparáveis a uma página de
+  prosa real — o Tesseract lê os rótulos do diagrama com confiança alta,
+  só que sem sentido semântico). Nenhum dos 3 sinais testados
+  (cobertura de imagem, volume de texto, confiança OCR) separa os 2
+  casos reais conhecidos sem arriscar suprimir detecções corretas. Não
+  implementada nenhuma correção — mesmo estado de antes, sem regressão.
+
+- [x] **Validação nos 4 livros, comparando o cluster de cabeçalho real
+  gerado por `primeira_passada()` (função de produção) antes/depois:**
+
+  | Livro | Resultado |
+  |---|---|
+  | 80 páginas | zero diferença |
+  | 208 páginas | zero diferença |
+  | 903 páginas (PEREIRA) | 1 cluster dividido em 2, sem efeito no resultado final (os dois ficam abaixo do limiar antes e depois) — divisão é uma correção colateral bem-vinda (dois nomes de periódico diferentes que não deveriam ter sido agrupados) |
+  | FDE (210p, inglês) | Cluster 1 resolvido (confirmado); Cluster 2 mantido (esperado); **1 NOVO falso positivo encontrado** |
+
+  **Pergunta que o usuário fez antes de aceitar a correção como
+  fechada, respondida com o dado que já tinha sido coletado**: o
+  mecanismo do novo falso positivo (remover palavra compartilhada pode
+  AUMENTAR a razão de contenção) foi testado nos 3 livros PT também,
+  não só observado por acaso no FDE. O diff de 80p/208p é do arquivo de
+  clusters INTEIRO (toda linha, não só as marcadas como cabeçalho) —
+  "zero diferença" prova que nenhuma linha desses 2 livros contém
+  nenhum dos 18 tokens em inglês agora tratados como stopword, então o
+  mecanismo não teve nenhuma pré-condição para disparar ali. No
+  PEREIRA, a pré-condição ocorreu 1 vez (citação de periódico em
+  inglês na bibliografia) e o efeito foi benigno (separou dois
+  clusters que não deveriam estar juntos, sem tocar o único cabeçalho
+  real já marcado). **Risco residual real, não uma prova geral**: um
+  livro em português com mais palavras em inglês espalhadas pelo corpo
+  do texto (não só isoladas na bibliografia, como PEREIRA) teria mais
+  chance de reproduzir o mesmo padrão do FDE — testado contra 3 livros
+  reais sem reprodução, não descartado como impossível. Ver
+  `ARCHITECTURE.md` para o detalhamento completo desta resposta.
+
+  **Achado real, não hipotético**: a correção de stopwords introduziu um
+  novo falso positivo no FDE — o cluster "oreilly" (antes `contagem=2`,
+  sem efeito) cresceu para `contagem=3`, agora removendo um cabeçalho de
+  seção real (`"What Is the Data Engineering Lifecycle?"`, página 52) do
+  EPUB. Mecanismo confirmado por cálculo direto: remover uma palavra
+  presente nos dois lados de uma comparação de contenção pode aumentar a
+  razão, não só diminuir, se o denominador (`min(|A|,|B|)`) encolher
+  proporcionalmente mais que o numerador. Similaridade deste par foi de
+  0,667 (sem stopwords EN) para 0,75 (com stopwords EN) — o oposto do
+  efeito pretendido, para este par específico.
+
+  **Decisão**: correção de stopwords MANTIDA, efeito colateral
+  documentado, não escondido. O bug original (stopwords só-português)
+  afeta qualquer texto em inglês, não só os 2 casos já conhecidos —
+  reverter deixaria o problema estrutural sem solução por causa de 1
+  caso-limite novo. Resultado líquido: de 2 falsos positivos confirmados
+  antes desta rodada, para 2 depois (1 corrigido, 1 mantido por falta de
+  calibração, 1 novo encontrado) — mas o bug estrutural que motivou a
+  tarefa está corrigido, que era o objetivo real.
+
+**Fechamento**: tarefa concluída com 1 correção implementada e validada
+(stopwords PT+EN), 1 correção investigada e conscientemente não
+implementada por falta de calibração (Cluster 2), 1 recomendação
+anterior revertida com evidência real (supressão de título por sinal
+estrutural — Parte 2), e 1 efeito colateral real da própria correção
+implementada encontrado e documentado, não escondido. Duas reversões de
+hipótese num único episódio de trabalho — candidatas a registro em
+`TRACE.md`, levadas para confirmação do usuário antes de editar esse
+arquivo, conforme pedido.
