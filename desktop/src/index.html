@@ -9,7 +9,7 @@
   <body>
     <main class="container">
       <h1>Foliant</h1>
-      <p class="subtitle">PDF &rarr; OCR &rarr; EPUB, offline</p>
+      <p class="subtitle">PDF &rarr; OCR &rarr; EPUB</p>
 
       <form id="form-conversao">
         <label>
@@ -45,6 +45,33 @@
 
         <button id="btn-converter" type="submit">Converter</button>
       </form>
+
+      <div id="progresso" class="progresso" hidden>
+        <div class="fase" data-fase="ocr">
+          <div class="fase-cabecalho">
+            <span class="fase-check">&#10003;</span>
+            <span class="fase-nome">OCR + análise</span>
+            <span class="fase-contador"></span>
+          </div>
+          <div class="barra"><div class="barra-preenchimento"></div></div>
+        </div>
+        <div class="fase" data-fase="html">
+          <div class="fase-cabecalho">
+            <span class="fase-check">&#10003;</span>
+            <span class="fase-nome">Montagem do HTML</span>
+            <span class="fase-contador"></span>
+          </div>
+          <div class="barra"><div class="barra-preenchimento"></div></div>
+        </div>
+        <div class="fase" data-fase="epub">
+          <div class="fase-cabecalho">
+            <span class="fase-check">&#10003;</span>
+            <span class="fase-nome">Compilação EPUB</span>
+            <span class="fase-contador"></span>
+          </div>
+          <div class="barra"><div class="barra-preenchimento"></div></div>
+        </div>
+      </div>
 
       <pre id="log"></pre>
     </main>

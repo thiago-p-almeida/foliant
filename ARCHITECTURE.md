@@ -1592,3 +1592,264 @@ fase toca esse caminho, conforme esperado (fora de escopo).
   branca ao redor) — nesse caso a proporção não bateria e nenhuma capa
   seria extraída (retorno `None`), comportamento seguro por padrão, mas
   não confirmado com um exemplo real desse tipo.
+
+## Fase 4.6: barra de progresso real por fase
+
+### Sintoma e pré-requisito
+
+Relato do usuário (sessão anterior): rodando como sidecar do Tauri, a UI
+parecia travada por minutos mesmo com o pipeline processando normalmente
+por baixo — confirmado via `ps aux` mostrando CPU ativa (Tesseract
+rodando) enquanto a UI não recebia nenhuma atualização. Objetivo desta
+fase: uma barra de progresso real por fase, com pré-requisito explícito
+de resolver essa causa raiz antes — uma barra nova sofreria do mesmo
+problema se o buffer de saída não fosse corrigido primeiro.
+
+### Investigação do buffer — resultado contra-intuitivo, `PYTHONUNBUFFERED=1` NÃO funciona no binário PyInstaller `--onefile`
+
+Testadas as duas opções do meta-prompt original, contra o binário
+PyInstaller real (não `python3 foliant.py` direto — que já é
+line-buffered em TTY e não reproduz o sintoma relatado, já que o sidecar
+roda via pipe, não TTY).
+
+**Teste 1 — script sintético isolado** (`python3` puro, 5 prints com
+`time.sleep(0.5)` entre eles, lidos via `subprocess.Popen(..., stdout=PIPE)`
+num harness que registra o timestamp de chegada de cada linha):
+- Sem correção: as 5 linhas chegam todas de uma vez, em bloco, ao final
+  (2,94s) — reproduz exatamente o sintoma relatado.
+- Com `PYTHONUNBUFFERED=1` no ambiente do processo filho: linhas chegam
+  uma a uma, a cada ~0,5s (0,11s / 0,62s / 1,12s / 1,63s / 2,13s).
+- Com `flush=True` em cada `print()`: mesmo resultado (0,14s / 0,64s /
+  1,15s / 1,66s / 2,18s).
+
+Neste teste isolado, **as duas opções resolvem igualmente** — o que
+sugeriria escolher `PYTHONUNBUFFERED=1` por não exigir tocar
+`foliant.py` (mesmo padrão de isolamento de mudança já usado no
+`fix_all_vars()` da Fase 4.3).
+
+**Teste 2 — o binário PyInstaller `--onefile` real, contra
+`samples/001-080.pdf` (80 páginas)**: aqui o resultado inverteu a
+decisão. Rodado o mesmo harness contra
+`desktop/src-tauri/binaries/foliant-core-x86_64-apple-darwin` com
+`PYTHONUNBUFFERED=1` setado no processo pai (exatamente como seria feito
+do lado Tauri, no mesmo lugar onde `fix_all_vars()` já ajusta o
+ambiente). Achado real, não esperado: **todos os `print()` do próprio
+Python ficaram retidos até o processo inteiro terminar**, mesmo com a
+env var setada — só a saída do subprocess do Calibre (que herda o file
+descriptor diretamente, sem passar pelo buffer de I/O do Python) chegou
+em tempo real. Evidência concreta (timestamps do harness, execução
+real):
+
+```
+645.91s: Conversion options changed from defaults:   <- Calibre, em tempo real
+...
+648.50s: EPUB output written to /tmp/teste_progresso_80.epub
+648.74s: Passo 1/2: OCR por página + análise de cabeçalhos e títulos...  <- devia ter chegado em t≈0
+648.74s:     página 20/80 processada    <- todas as 4 marcas de página
+648.74s:     página 40/80 processada       chegaram JUNTAS, no mesmo instante,
+648.74s:     página 60/80 processada       só quando o processo já ia terminar
+648.74s:     página 80/80 processada
+```
+
+Ou seja: a saída do Calibre (herdada via fd, fora do controle do
+Python) chegou em tempo real desde o início; toda a saída do próprio
+`foliant.py` — que é o que a barra de progresso precisa — ficou presa
+até o fim, exatamente o defeito que esta fase existe para corrigir.
+**`PYTHONUNBUFFERED=1` setado no processo pai não é suficiente dentro do
+bootloader de duas etapas do PyInstaller `--onefile`** — hipótese mais
+provável (não confirmada a fundo, não essencial para a decisão): o
+bootloader do PyInstaller pode reconfigurar `sys.stdout` depois que o
+interpretador embutido já leu a variável de ambiente no `Py_Initialize`,
+ou o processo filho real (a segunda etapa do bootloader, ver Fase 4)
+recebe o ambiente de um jeito que não preserva o efeito da flag. Não
+investigado até a causa raiz exata porque a correção alternativa
+(abaixo) resolve de forma direta e já testada.
+
+**Correção escolhida**: `sys.stdout.reconfigure(line_buffering=True)`
+como a primeira linha de `main()` em `foliant.py` — força o modo de
+buffer diretamente no objeto `sys.stdout` em tempo de execução, depois
+que o interpretador (embutido ou não) já está de pé, em vez de depender
+de uma variável de ambiente lida no `Py_Initialize`. Diferente de
+`PYTHONUNBUFFERED=1`, isso **exige tocar o núcleo** — decisão consciente,
+não a preferência original (que era manter a mudança isolada no lado
+Tauri) — porque o teste contra o binário real mostrou que a alternativa
+isolada não funciona. Validado (mesmo binário reconstruído com a
+correção, mesmo harness, `samples/001-080.pdf` recortado para 5 páginas
+via `pymupdf.insert_pdf` para iteração rápida):
+
+```
+2.92s: Passo 1/2: OCR por página + análise de cabeçalhos e títulos...   <- chega imediatamente
+23.65s:     página 5/5 processada    <- chega assim que a página termina, não no final do processo
+23.65s: Passo 2/2: montando HTML a partir do cache...
+23.65s: Compilando e-book final (.epub) com Calibre...
+25.05s: 1% Converting input to HTML...
+```
+
+Confirma streaming linha a linha real, não em bloco.
+
+> **RISCO RESIDUAL EXPLÍCITO**: a causa raiz exata de por que
+> `PYTHONUNBUFFERED=1` não se propaga dentro do bootloader `--onefile`
+> não foi isolada (ver hipótese acima, não confirmada). Isso não afeta a
+> validade da correção escolhida (testada e funcionando de forma
+> repetida, em várias execuções reais desta fase), mas significa que se
+> o mecanismo de empacotamento mudar no futuro (ex.: troca de
+> `--onefile` para `--onedir`, ou de PyInstaller para outra ferramenta),
+> o comportamento da env var precisaria ser re-testado do zero — não
+> assumir que a causa raiz não isolada aqui generaliza.
+
+### Formato de comunicação sidecar → UI
+
+Decisão: manter a saída de texto legível para humano (log bruto, útil
+para depuração — já era o comportamento antes desta fase) E emitir
+linhas adicionais com prefixo `PROGRESS:` seguido de um objeto JSON de
+uma linha só (`PROGRESS:{"fase":"ocr","atual":80,"total":208}`), que o
+lado JS (`main.js`) reconhece por `linha.startsWith("PROGRESS:")`,
+remove do log bruto e usa para atualizar a barra. Não adotado nenhum
+protocolo de IPC mais sofisticado (ex.: um segundo file descriptor,
+NDJSON dedicado) — o par stdout/pipe já usado pelo Tauri
+(`Command.stdout.on("data", ...)`) já entrega linha a linha de forma
+confiável (comportamento já em uso desde a Fase 4, com o log bruto
+funcionando), e introduzir um canal separado exigiria mudar a forma como
+o sidecar é invocado (`Command.sidecar`), sem nenhum ganho real dado que
+o volume de dados é pequeno (uma linha JSON curta por página, no máximo
+uma por página de um livro de milhares de páginas).
+
+### As 3 fases visíveis não têm o mesmo tipo de sinal — decisão calibrada com tempo real medido
+
+O meta-prompt original pedia 3 fases "visíveis", mas os dados reais desta
+fase mostram que elas não são equivalentes:
+
+1. **`ocr`** (OCR/extração nativa + análise de cabeçalhos, `primeira_passada()`):
+   sinal granular real (página atual/total), e é a fase que domina o
+   tempo total em todo livro testado (ver validação abaixo) — a única
+   com uma barra 0-100% "de verdade" alimentada por progresso real do
+   próprio trabalho.
+2. **`html`** (montagem do HTML, `construir_html()`): **sem contador
+   granular** — decisão tomada com dado real, não suposição: medido em
+   produção que essa fase leva bem menos de 1 segundo mesmo no livro de
+   903 páginas (PEREIRA) — no log real da validação, `Passo 2/2` e o
+   início da compilação Calibre aparecem no mesmo timestamp de 2 casas
+   decimais. Não vale a pena (nem seria honesto) desenhar uma barra
+   0-100% para uma fase que non tem trabalho incremental observável;
+   fica com `"total":0` (sinalizando à UI o modo indeterminado/spinner).
+3. **`epub`** (compilação Calibre, `convert_to_ebook()`): o Calibre
+   emite só **3 marcas fixas** de porcentagem no seu próprio stdout —
+   `1% Converting input to HTML...`, `34% Running transforms on
+   e-book...`, `67% Running EPUB Output plugin` — confirmado em
+   múltiplas execuções reais (livro de 5 páginas e de 903 páginas,
+   mesmas 3 marcas, mesmos valores exatos, nas duas escalas). Não é uma
+   progressão contínua — a barra "pula" entre essas 3 marcas, o que é
+   fiel ao sinal real do Calibre, não um defeito da implementação.
+   Achado real relevante: no livro de 903 páginas, a marca `67%` ficou
+   parada por **~66 segundos** (`74.94s` a `141.32s`, durante
+   `"Splitting markup on page breaks... Split into 903 parts"`) — a
+   barra desta fase fica parada nesse valor por um tempo real
+   perceptível em livros grandes, comportamento esperado do próprio
+   Calibre, não um travamento da UI.
+
+`convert_to_ebook()` precisou trocar de `subprocess.run(cmd,
+check=True)` (saída herdada direto pelo fd, sem chance de interceptar)
+para `subprocess.Popen(..., stdout=PIPE, stderr=STDOUT)` com um laço que
+imprime cada linha (preservando o log bruto idêntico a antes) e, quando
+a linha bate `^\d{1,3}%\s`, emite a `PROGRESS:` correspondente. O
+`check=True` original (levanta `CalledProcessError` em código de saída
+não-zero) foi preservado manualmente com `processo.wait()` + checagem de
+`codigo != 0`.
+
+### Implementação (lado UI)
+
+`desktop/src/index.html`: 3 linhas de fase (OCR+análise, Montagem do
+HTML, Compilação EPUB), cada uma com nome, contador textual e barra.
+`desktop/src/styles.css`: fase ativa/concluída com opacidade e check
+(✓); barra indeterminada com animação de "varredura" contínua (`@keyframes
+barra-indeterminada`) para a fase `html`, que não tem número real para
+mostrar. `desktop/src/main.js`: `processarLinha()` intercepta linhas
+`PROGRESS:`, faz `JSON.parse` e chama `atualizarProgresso(fase, atual,
+total)`, que marca fases anteriores na ordem fixa (`ocr` → `html` →
+`epub`) como concluídas e atualiza a barra/contador da fase atual;
+linhas malformadas (JSON inválido) caem de volta para o log bruto em vez
+de quebrar a UI.
+
+### Validação (dados reais, 2026-09-04)
+
+Rodado o binário do sidecar reconstruído (idêntico, por checksum, ao
+embutido em `Foliant.app` após rebuild) diretamente via um harness que
+lê o stdout linha a linha com timestamp, contra os 3 livros de
+calibração do projeto.
+
+**PEREIRA (903 páginas, caminho nativo em quase todo o livro)**:
+- Exit code 0, tempo total **144,29s**, 910 linhas `PROGRESS:` emitidas.
+- Streaming confirmado em tempo real: primeira marca de página (20/903)
+  em 5,84s, última (903/903) em 69,56s — atualizações a cada ~1,5-2s ao
+  longo de toda a fase OCR, não em blocos.
+- Fase `epub`: marca `67%` parada de 74,94s a 141,32s (~66s) durante o
+  split do HTML em 903 partes — comportamento real do Calibre nesta
+  escala, documentado acima.
+- **Zero regressão**: `.epub` extraído tem 903 arquivos HTML e 10578
+  tags `<p>` — idêntico ao baseline já registrado na Fase 4.5 para este
+  mesmo livro (10578 parágrafos).
+
+**Livro de 208 páginas e livro de 80 páginas (100% via caminho OCR)**:
+validados contra `samples/livro_completo_208pg.pdf` e
+`samples/001-080.pdf`. A máquina de desenvolvimento (Intel Core m3
+dual-core, 0,9GHz, sem ventoinha) estava sob contenção real de CPU
+durante boa parte do teste de 208 páginas (múltiplas sessões do Claude
+Code, navegador e editor abertos simultaneamente pelo usuário; `pmset -g
+therm` confirmou `CPU_Speed_Limit = 50` — throttling térmico ativo — e
+`load average` de ~33 num par de núcleos), fazendo o tempo por página
+variar de forma não representativa do throughput normal da máquina
+(chegou a ~20-24s por página em certos trechos, contra ~6-9s/página do
+baseline histórico documentado nas Fases 2-4). Isso não é uma regressão
+desta fase — as linhas `PROGRESS:` continuaram chegando em tempo real
+mesmo sob contenção (streaming confirmado por timestamp em todo o
+teste), só o throughput ficou mais baixo que o baseline. O teste de 80
+páginas, rodado depois com menos contenção concorrente, ficou bem mais
+próximo do baseline histórico:
+
+| Livro | Páginas | Exit | Tempo total | Linhas PROGRESS | HTMLs no epub | `<p>` | Páginas confirmadas | Baseline (HTMLs/páginas) |
+|---|---|---|---|---|---|---|---|---|
+| PEREIRA | 903 | 0 | 144,29s (2m24s) | 910 | 903 | 10578 | 903/903 | 903 HTMLs, 10578 `<p>` (Fase 4.5) — **idêntico** |
+| `livro_completo_208pg.pdf` | 208 | 0 | 2202,57s (36m43s)* | 215 | 195 | 1205 | 208/208 | 195 HTMLs, 1205 `<p>` (Fase 4/4.5) — **idêntico** |
+| `samples/001-080.pdf` | 80 | 0 | 616,62s (10m17s) | 87 | 76 | 481 | 80/80 | 76 HTMLs (Fase 4) — **idêntico** |
+
+\* tempo inflado por contenção real de CPU, não representativo do
+throughput normal da máquina — ver acima.
+
+Zero regressão em nenhum dos 3 livros: contagem de HTMLs (que o Calibre
+gera ao dividir o EPUB por tamanho) e de parágrafos idêntica aos
+baselines já registrados nas Fases 4/4.4/4.5, TOC com a mesma contagem
+de capítulos já validada (8 entradas em 80 páginas, 26 em 208 páginas —
+ambos batendo com a Fase 3), e streaming confirmado por timestamp real
+em tempo real nos 3 casos (não em blocos de minutos como o sintoma
+original).
+
+### Limitações conhecidas
+
+- Causa raiz exata de `PYTHONUNBUFFERED=1` não funcionar dentro do
+  bootloader PyInstaller `--onefile` não foi isolada (ver risco residual
+  acima) — a correção adotada (`reconfigure`) é robusta e testada, mas
+  não vem acompanhada de uma explicação completa do porquê da alternativa
+  falhar.
+- A fase `epub` reflete fielmente as 3 marcas que o Calibre emite — não
+  há como suavizar isso numa progressão mais granular sem inventar
+  números que o próprio Calibre não fornece (o que seria menos honesto
+  que uma barra "pulando" entre marcas reais).
+- Validação de streaming em tempo real e ausência de regressão de
+  parágrafos/páginas está **completa e fechada** nos 3 livros de
+  calibração (PEREIRA 903p, 208p, 80p) — ver tabela acima. O teste de
+  208 páginas rodou sob contenção real de CPU da máquina do usuário
+  (múltiplas sessões/apps abertas simultaneamente), inflando o tempo
+  total sem afetar a validade do streaming em si (confirmado por
+  timestamp) nem a integridade do conteúdo (contagens idênticas ao
+  baseline).
+- Confirmação visual direta da UI (barras realmente desenhando na tela,
+  animação da fase indeterminada) não foi possível nesta sessão — mesma
+  limitação de automação de acessibilidade contra binário não assinado
+  já documentada nas Fases 4.1-4.3 (`tccd` nega a automação,
+  `screencapture` não mostra a janela do app neste ambiente de teste).
+  Validado por evidência indireta forte (mecanismo de entrega idêntico
+  ao já usado com sucesso desde a Fase 4.2 para o log bruto) mas
+  pendente de um clique manual do usuário no `.app` reinstalado para
+  fechar o critério de aceite com 100% de confiança — mesmo padrão já
+  usado nas Fases 4.1-4.3 para esse tipo de limitação.
+

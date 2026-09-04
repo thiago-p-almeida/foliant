@@ -782,6 +782,7 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
     matriz_zoom = pymupdf.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
     contador: Counter = Counter()
 
+    print(f'PROGRESS:{{"fase":"ocr","atual":0,"total":{total}}}')
     capa_path = extrair_capa(doc, cache_path.parent)
 
     with cache_path.open("w", encoding="utf-8") as cache:
@@ -803,6 +804,12 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
 
             if (i + 1) % 20 == 0 or (i + 1) == total:
                 print(f"    página {i+1}/{total} processada")
+            # linha estruturada emitida a CADA página (não só a cada 20,
+            # diferente do log legível acima) — é o sinal que a UI usa
+            # para desenhar a barra de progresso; throttle aqui deixaria a
+            # barra "pulando" em blocos, o mesmo defeito que a Fase 4.6
+            # existe para corrigir.
+            print(f'PROGRESS:{{"fase":"ocr","atual":{i+1},"total":{total}}}')
 
     doc.close()
 
@@ -845,6 +852,11 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
     capítulo detectado (se houver) para <h2>, limpando o ruído decorativo
     de OCR e unindo linhas de continuação em parágrafos reais (Tarefa B)."""
     print("Passo 2/2: montando HTML a partir do cache...")
+    # sem contador granular nesta fase — medido em produção (ver
+    # ARCHITECTURE.md, Fase 4.6): monta o HTML de um livro de 208 páginas
+    # em bem menos de 1s, tempo desprezível perto do OCR. "total":0 sinaliza
+    # à UI para tratar como indeterminado (spinner), não 0/0 de erro.
+    print('PROGRESS:{"fase":"html","atual":0,"total":0}')
 
     with cache_path.open(encoding="utf-8") as cache, html_path.open("w", encoding="utf-8") as out:
         out.write(HTML_HEADER.format(titulo=html.escape(titulo)))
@@ -894,6 +906,15 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
         out.write(HTML_FOOTER)
 
 
+# O Calibre não emite uma % contínua — só 3 marcas fixas ao longo da
+# conversão ("1% Converting input to HTML...", "34% Running transforms...",
+# "67% Running EPUB Output plugin"), confirmado com dado real (2026-09-04,
+# ver ARCHITECTURE.md Fase 4.6) em múltiplas execuções reais (5 e 903
+# páginas) — não uma suposição sobre o formato. O parser só precisa
+# reconhecer esse padrão de prefixo, não interpolar entre marcas.
+_RE_PROGRESSO_CALIBRE = re.compile(r"^(\d{1,3})%\s")
+
+
 def convert_to_ebook(html_path: Path, saida: Path, titulo: str, autor: str, capa_path: Path | None) -> None:
     print(f"Compilando e-book final ({saida.suffix}) com Calibre...")
     cmd = [
@@ -914,10 +935,42 @@ def convert_to_ebook(html_path: Path, saida: Path, titulo: str, autor: str, capa
     ]
     if capa_path is not None:
         cmd += ["--cover", str(capa_path)]
-    subprocess.run(cmd, check=True)
+
+    print('PROGRESS:{"fase":"epub","atual":0,"total":100}')
+    # subprocess.run(..., check=True) sem captura (versão anterior) deixava
+    # a saída do Calibre passar direto pelo fd herdado, sem chance de
+    # interceptar as marcas de "%". Popen com stdout capturado preserva o
+    # log bruto linha a linha (print de cada linha, igual antes) e permite
+    # também emitir a linha PROGRESS: correspondente.
+    processo = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert processo.stdout is not None
+    for linha in processo.stdout:
+        linha = linha.rstrip("\n")
+        print(linha)
+        m = _RE_PROGRESSO_CALIBRE.match(linha)
+        if m:
+            print(f'PROGRESS:{{"fase":"epub","atual":{m.group(1)},"total":100}}')
+    codigo = processo.wait()
+    if codigo != 0:
+        raise subprocess.CalledProcessError(codigo, cmd)
+    print('PROGRESS:{"fase":"epub","atual":100,"total":100}')
 
 
 def main() -> None:
+    # Sem isto, print() fica block-buffered quando stdout é um pipe (não
+    # um TTY) — caso do processo filho spawnado pelo Tauri. PYTHONUNBUFFERED=1
+    # setado no processo pai (lado Rust) foi testado primeiro e NÃO
+    # funcionou dentro do binário PyInstaller --onefile: confirmado com
+    # dado real (harness lendo o stdout do binário via pipe) que os prints
+    # do Python ficaram retidos até o processo inteiro terminar, mesmo com
+    # a env var setada — só a saída do subprocess do Calibre (que herda o
+    # fd diretamente, sem passar pelo buffer do Python) chegou em tempo
+    # real. reconfigure(line_buffering=True) força o modo de buffer no
+    # próprio objeto sys.stdout, independente de como o bootloader do
+    # PyInstaller trata a variável de ambiente no start-up do interpretador
+    # embutido. Ver ARCHITECTURE.md, Fase 4.6, para os timestamps do teste.
+    sys.stdout.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(
         description="Foliant: PDF -> OCR -> HTML -> EPUB/AZW3, offline e em streaming"
     )

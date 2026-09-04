@@ -954,3 +954,89 @@ monitorar um processo em background, orientar explicitamente a
 depender só da notificação de conclusão nativa do próprio comando em
 background, sem agendar um `ScheduleWakeup` paralelo para o mesmo
 evento — evita o atraso/duplicação observado.
+
+## Fase 4.6: barra de progresso real por fase (2026-09-04)
+
+Ver `ARCHITECTURE.md` para a investigação completa do buffer de saída,
+o formato das linhas `PROGRESS:` e o raciocínio por trás de 2 das 3
+fases terem sinal granular real e 1 (montagem HTML) não ter. Aqui, só a
+evidência de validação.
+
+- [x] **Buffer de saída — `PYTHONUNBUFFERED=1` testado e descartado,
+  `sys.stdout.reconfigure(line_buffering=True)` adotado.** Achado real
+  contra-intuitivo: um teste sintético isolado (`python3` puro) mostrou
+  as duas opções funcionando igual, mas contra o binário PyInstaller
+  `--onefile` real, `PYTHONUNBUFFERED=1` setado no processo pai **não
+  funcionou** — todos os `print()` do Python ficaram retidos até o
+  processo inteiro terminar (confirmado com timestamps reais: linhas de
+  "página X/80 processada" que deveriam ter aparecido ao longo de ~9
+  minutos chegaram todas juntas, no mesmo instante, só no final). Só a
+  saída do subprocess do Calibre (herdada via fd, fora do buffer do
+  Python) chegou em tempo real nesse teste. `reconfigure(line_buffering=True)`
+  testado da mesma forma e confirmado funcionando — streaming linha a
+  linha real. Isso significou tocar `foliant.py` (não só o lado Tauri,
+  como a preferência original), decisão justificada pela evidência, não
+  pela conveniência.
+
+- [x] **Linhas `PROGRESS:` estruturadas.** Emitidas a cada página (não
+  só a cada 20, diferente do log legível já existente) na fase `ocr`, no
+  início/fim da fase `html` (sem contador — ver justificativa com tempo
+  medido em `ARCHITECTURE.md`), e por cada marca de `%` real que o
+  Calibre emite na fase `epub` (`convert_to_ebook()` migrado de
+  `subprocess.run` sem captura para `Popen` com stdout capturado, para
+  poder interceptar essas marcas sem perder o log bruto).
+
+- [x] **UI (index.html/styles.css/main.js).** 3 fases visíveis, cada uma
+  com nome, contador e barra; fase `html` com animação indeterminada
+  (spinner) em vez de 0-100%, já que não tem sinal granular real.
+  Validação visual direta da UI (clique/renderização) não foi possível
+  nesta sessão — mesma limitação de automação de acessibilidade contra
+  binário não assinado já documentada nas Fases 4.1-4.3 (`tccd` nega
+  automação, app não aparece em capturas de tela deste ambiente).
+  Validado por evidência indireta forte: o mecanismo de entrega
+  (`Command.stdout.on("data", ...)` linha a linha) já era usado com
+  sucesso desde a Fase 4.2 para o log bruto, e as linhas `PROGRESS:`
+  seguem exatamente o mesmo canal — mas a confirmação visual final
+  (barras realmente desenhando, animação da fase indeterminada) fica
+  pendente de teste manual do usuário no `.app` reinstalado.
+
+- [x] **Validação end-to-end nos 3 livros de calibração, binário do
+  sidecar reconstruído (idêntico por checksum ao embutido no `.app`
+  após rebuild):**
+
+  | Livro | Páginas | Caminho | Exit | Tempo total | Linhas PROGRESS | HTMLs no epub | `<p>` | Baseline anterior |
+  |---|---|---|---|---|---|---|---|---|
+  | PEREIRA | 903 | nativo (quase todo) | 0 | 144,29s | 910 | 903 | 10578 | 10578 (Fase 4.5) — **idêntico** |
+  | `livro_completo_208pg.pdf` | 208 | OCR | 0 | 2202,57s* | 215 | 195 | 1205 | 1205 (Fase 4/4.5) — **idêntico** |
+  | `samples/001-080.pdf` | 80 | OCR | 0 | 616,62s (10m17s) | 87 | 76 | 481 | 76 HTMLs (Fase 4) — **idêntico** |
+
+  \* O tempo de 208 páginas (36m43s) é bem mais alto que o baseline
+  histórico (~19-20min) — atribuído a contenção real de CPU na máquina
+  de desenvolvimento durante o teste (múltiplas sessões do Claude Code,
+  editor e navegador rodando ao mesmo tempo; `pmset -g therm` confirmou
+  `CPU_Speed_Limit=50`, throttling térmico ativo, e `load average` de
+  ~33 num par de núcleos), não uma regressão desta fase — as linhas
+  `PROGRESS:` continuaram chegando em tempo real (streaming confirmado
+  por timestamp) mesmo com o processamento mais lento. O teste de 80
+  páginas, rodado depois com menos contenção concorrente, ficou bem
+  mais próximo do baseline histórico (~8-11min). Contagem de
+  páginas/parágrafos/HTMLs idêntica ao baseline nos 3 livros confirma
+  **zero regressão** no pipeline em si — a mudança de buffer e as
+  linhas `PROGRESS:` não afetaram o conteúdo gerado.
+
+  Streaming em tempo real confirmado por timestamp em todos os testes —
+  ex. PEREIRA: página 20/903 em 5,84s, página 903/903 em 69,56s,
+  atualizações a cada ~1,5-2s ao longo de toda a fase, não em blocos de
+  minutos como o sintoma original relatado.
+
+**Fechamento**: os 3 livros de calibração validados sem regressão,
+streaming em tempo real confirmado por timestamp em todos. Confirmação
+visual manual da UI (barras desenhando de verdade na tela) pendente do
+usuário — automação de acessibilidade não foi possível nesta sessão
+(mesma limitação de binário não assinado já documentada nas Fases
+4.1-4.3: `tccd` nega a automação, `screencapture` não mostra a janela
+do app neste ambiente). Recomendado: reinstalar `Foliant.app` a partir
+do `.dmg` novo em `desktop/src-tauri/target/release/bundle/dmg/` e
+testar manualmente uma conversão, observando as 3 barras de progresso
+atualizando durante o processamento.
+
