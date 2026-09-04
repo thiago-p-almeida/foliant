@@ -592,3 +592,800 @@ livro de 208 páginas.
   `JANELA_TITULO_LINHAS` (7) são calibrados contra os 2 livros reais
   testados (7 páginas de início de capítulo ao todo, mais os 4 casos de
   defeito real encontrados) — não uma prova geral para qualquer livro.
+
+## Fase 4: empacotamento desktop (Tauri + sidecar PyInstaller)
+
+### Objetivo e restrição
+
+Só resolver fricção de distribuição — hoje usar o Foliant exige instalar
+Python, Tesseract e Calibre manualmente. O núcleo (`foliant.py`) **não foi
+alterado nesta fase**: o objetivo era empacotá-lo como binário standalone
+(PyInstaller) e embuti-lo como sidecar num app Tauri, produzindo saída
+byte-idêntica à do `python3 foliant.py` de sempre.
+
+### Passo 0 — verificação de documentação atual
+
+A sintaxe de sidecar do Tauri v2 foi confirmada contra a documentação
+oficial atual (não assumida de memória): `bundle.externalBin` no
+`tauri.conf.json` aponta para um binário sem sufixo; o Tauri bundler
+espera encontrá-lo com o sufixo do target triple
+(`foliant-core-x86_64-apple-darwin` nesta máquina — Intel Core m3, não
+Apple Silicon). A permissão de execução é declarada em
+`capabilities/default.json` via `shell:allow-execute` com `sidecar: true`
+e uma lista de `args` permitidos (Tauri v2 valida os argumentos passados
+em runtime contra essa lista — não é uma permissão "livre").
+
+Sobre o problema conhecido de PyMuPDF+PyInstaller (`AttributeError` por
+`stdout`/`stderr` nulos): só ocorre em modo `--windowed`/`--noconsole`.
+Não se aplica aqui — o binário mantém console (é invocado como processo
+filho pelo Tauri, com stdout/stderr capturados via pipe, não substituído
+por `None`).
+
+### Passo 1 — PyInstaller
+
+```bash
+pyinstaller --onefile --name foliant-core foliant.py
+```
+
+`pyinstaller-hooks-contrib` (instalado automaticamente como dependência
+do PyInstaller) já inclui um hook para PyMuPDF — o import de `fitz`
+funcionou no binário empacotado sem precisar de `--collect-all pymupdf`,
+diferente do que a documentação antiga sugeria como precaução. Binário
+resultante: **37MB**.
+
+**Achado real durante a validação** (não esperado, não é bug do
+`foliant.py`): o modo `--onefile` do PyInstaller usa um bootloader de
+duas etapas — o processo inicial extrai o payload para um diretório
+temporário e depois `fork`s um processo filho que roda o Python real,
+mantendo o pai vivo para limpar o diretório temporário ao final. Isso
+tem duas consequências práticas:
+1. **Cold start**: `foliant-core --help` (nenhum trabalho real) leva
+   ~4,5–5,1s só para descompactar o payload a cada execução — contra
+   praticamente instantâneo do `python3 foliant.py --help`. Custo fixo
+   por execução, não por página.
+2. **Medição de RAM via `/usr/bin/time -l` fica errada**: a métrica
+   `peak memory footprint` (a mais confiável nos testes da Fase
+   anterior) é lida do processo que `/usr/bin/time` mede diretamente —
+   o processo-stub, não o filho que faz o trabalho de verdade. Resultado
+   observado: `peak memory footprint` de **528.384 bytes** (516KB) — um
+   número obviamente errado, não o pico real do OCR. `maximum resident
+   set size` (402MB de referência com Python puro) não teve esse
+   problema porque parece agregar sobre a árvore de processos filhos
+   (375.623.680 B / 358,2 MiB observado — mesma ordem de grandeza da
+   referência). Corrigido medindo RSS do processo filho real por
+   polling (`ps -o rss=`) durante a execução em vez de confiar em
+   `/usr/bin/time -l` no processo pai. Ver resultados no Passo 4.
+
+Testado isoladamente (fora do Tauri) contra os 2 livros de teste, com o
+mesmo comando trocando `python3 foliant.py` pelo binário — ver Passo 4
+para os resultados.
+
+### Passo 2 — decisão sobre Tesseract/Calibre: opção (a)
+
+**Decisão**: o app assume que Tesseract e Calibre já estão instalados
+separadamente (opção a do meta-prompt original). O instalador Tauri só
+empacota o núcleo Python; a documentação orienta os mesmos passos manuais
+já validados (`README.md`).
+
+**Por quê**: consistente com o padrão de execução incremental já usado
+neste projeto (menor risco por etapa) — embutir os binários de terceiros
+(opção b) aumentaria muito o tamanho do instalador e criaria um problema
+de versionamento/manutenção próprio (Tesseract via micromamba e o `.app`
+inteiro do Calibre têm ciclos de release independentes do Foliant, e
+redistribuir esses binários levanta questões de licença que não foram
+avaliadas). Nenhum dos dois motivos para (b) — resolver fricção por
+completo — supera o custo de manutenção nesta fase. Documentado como
+possível Fase 4.1 futura, não implementado.
+
+### Passo 3 — sidecar no Tauri
+
+Projeto criado em `desktop/` (`pnpm create tauri-app`). Mudanças em
+relação ao template padrão:
+
+- `desktop/src-tauri/tauri.conf.json`: `bundle.externalBin: ["binaries/foliant-core"]`.
+- `desktop/src-tauri/Cargo.toml`: adicionados `tauri-plugin-shell` e
+  `tauri-plugin-dialog` (o `opener` do template não é suficiente — é
+  preciso `shell` para `spawn()` do sidecar e `dialog` para os seletores
+  de arquivo da UI).
+- `desktop/src-tauri/capabilities/default.json`: permissão
+  `shell:allow-execute` com `sidecar: true` e validadores de `args`
+  (posição do PDF de entrada, saída, `--lang`, `--autor`, `--titulo`).
+- `desktop/src-tauri/binaries/foliant-core-x86_64-apple-darwin`: cópia do
+  binário do Passo 1, **não versionada** (`.gitignore`) — gerada por
+  `scripts/build-sidecar.sh`, que deve rodar antes de `pnpm tauri build`
+  em qualquer máquina nova.
+- UI mínima (`desktop/src/index.html` + `main.js`): formulário com
+  seleção de PDF/destino (via `@tauri-apps/plugin-dialog`), título,
+  autor, idioma, e um painel de log que mostra stdout/stderr do sidecar
+  em tempo real via `Command.sidecar(...).stdout.on("data", ...)`.
+
+### Passo 4 — validação (dados reais, 2026-09-03)
+
+**Empacotamento**: `pnpm tauri build` produziu `Foliant.app` (50MB) e
+`Foliant_0.1.0_x64.dmg` (41MB), com o sidecar corretamente embutido em
+`Foliant.app/Contents/MacOS/foliant-core` (o Tauri renomeia, removendo o
+sufixo de target triple no bundle final).
+
+**Byte-identidade — livro de 80 páginas** (`samples/001-080.pdf`):
+`python3 foliant.py` vs. binário PyInstaller isolado. Os 76 arquivos HTML
+extraídos do EPUB são **idênticos byte a byte**. Diferenças encontradas
+(esperadas, documentadas no meta-prompt original antes mesmo do teste):
+`content.opf` (timestamp e UUID gerados pelo Calibre a cada execução),
+`toc.ncx` (mesmo UUID + IDs de `navPoint` aleatórios), `cover_image.jpg`
+(capa placeholder gerada pelo Calibre com anti-aliasing não-determinístico
+— conteúdo visualmente idêntico, bytes JPEG diferentes). Nenhuma dessas
+diferenças vem do `foliant.py` ou do empacotamento — são geradas pelo
+Calibre de forma nova a cada chamada, independente de quem o invoca.
+
+**Byte-identidade — livro de 208 páginas** (`samples/livro_completo_208pg.pdf`,
+169MB): mesmo resultado — os 195 arquivos HTML são idênticos byte a byte;
+só `content.opf`/`toc.ncx`/`cover_image.jpg` diferem, pela mesma razão.
+
+**Tempo de execução** (208 páginas, rodado sequencialmente para não
+competir por CPU nesta máquina dual-core):
+| | Tempo real |
+|---|---|
+| `python3 foliant.py` | 34m27s |
+| `foliant-core` (PyInstaller) | 20m19s |
+
+A diferença não é atribuída ao empacotamento — mais provável é o cache de
+disco/SO já estar quente na segunda execução (mesmo PDF de 169MB lido
+duas vezes em sequência). Não foi isolado further porque não é uma
+regressão (o binário empacotado não ficou mais lento, o oposto).
+
+**RAM** (livro de 80 páginas, medida por polling de RSS do processo
+filho real — ver nota do Passo 1 sobre por que `/usr/bin/time -l` no
+processo pai não serve para binários PyInstaller `--onefile`):
+pico de **377.604 KB (368,8 MiB)** — mesma ordem de grandeza do
+`maximum resident set size` de referência (383,7 MiB, Python puro,
+Fase de validação de carga). Sem regressão de memória atribuível ao
+empacotamento.
+
+**Cold start**: ~4,5–5,1s de overhead fixo por execução (extração do
+payload do `--onefile`), medido com `foliant-core --help` (sem OCR real).
+Ver Passo 1 para a causa raiz (bootloader de duas etapas).
+
+**Risco residual aceito — Gatekeeper macOS**: sem assinatura de código
+(decisão já tomada, custo do Apple Developer Program rejeitado), o macOS
+mostra "desenvolvedor não identificado" ao abrir `Foliant.app`/`.dmg`
+pela primeira vez. Não testado numa máquina limpa nesta fase (mesma
+máquina de desenvolvimento, com Xcode Command Line Tools e demais
+dependências já presentes) — documentado como o único obstáculo restante
+esperado, não uma lacuna de teste.
+
+## Fase 4.1: correção — módulos ES sem bundler quebravam a UI empacotada
+
+**Sintoma**: `.dmg` da Fase 4 instalado renderizava a UI, mas nenhum
+botão ("Selecionar…", drag-and-drop, "Converter") respondia, sem erro
+visível na tela.
+
+**Causa raiz**: `desktop/src/main.js` era carregado via
+`<script type="module">` e usava especificadores nus
+(`import { Command } from "@tauri-apps/plugin-shell"`,
+`import { open, save } from "@tauri-apps/plugin-dialog"`). O template
+gerado por `pnpm create tauri-app` para esse preset (vanilla JS, sem
+framework) não inclui nenhum bundler — `tauri.conf.json` original tinha
+`build.frontendDist: "../src"`, servindo os arquivos-fonte diretamente,
+sem passo de build nem `<script type="importmap">` em `index.html`. Por
+especificação de módulos ES (WHATWG HTML), um especificador nu só
+resolve com um import map — inexistente aqui. O `import` falha de forma
+síncrona antes de qualquer `document.getElementById(...).addEventListener(...)`
+rodar, e nada na página captura ou reporta esse erro — daí HTML/CSS
+renderizarem normalmente enquanto toda a lógica de evento fica morta.
+
+Verificado que a própria dependência `@tauri-apps/plugin-dialog`
+(`node_modules/@tauri-apps/plugin-dialog/dist-js/index.js`) reimporta
+`@tauri-apps/api/core` do mesmo jeito (bare specifier) — ou seja, mesmo
+usando o global injetado por `withGlobalTauri: true` (já presente no
+`tauri.conf.json` desde a Fase 4) não haveria como despachar as funções
+de conveniência `open`/`save`/`Command` sem reescrever manualmente as
+chamadas de baixo nível `invoke("plugin:dialog|open", ...)` — mais
+frágil e menos alinhado ao padrão oficial do que simplesmente empacotar.
+
+**Por que isso não foi pego antes do empacotamento**: a Fase 4 validou
+byte-identidade do *pipeline* (`foliant.py` vs. sidecar PyInstaller) e
+tamanho/tempo/RAM do bundle, mas não incluiu um teste funcional da UI
+Tauri em si (clicar nos botões) — lacuna real de cobertura de teste
+daquela fase, não um regressão introduzida depois.
+
+**Correção**: adicionado `esbuild` (`desktop/package.json`
+devDependencies) e `desktop/scripts/build-web.mjs`, que empacota
+`src/main.js` (resolvendo todos os imports de verdade, formato `esm`,
+target `es2021`) e copia `index.html`/`styles.css`/`assets/` para
+`desktop/dist/`. `tauri.conf.json` mudou:
+`build.frontendDist` de `"../src"` para `"../dist"`, com
+`beforeDevCommand`/`beforeBuildCommand` apontando para `pnpm build:web`
+— roda automaticamente tanto em `tauri dev` quanto em `tauri build`, sem
+passo manual extra para quem for buildar em outra máquina.
+
+**Validação real**: com a correção, `pnpm tauri dev` rodando e um clique
+no botão "Selecionar…" disparado via automação de acessibilidade do
+macOS (`osascript`/System Events, já que não havia acesso a captura de
+tela nem Web Inspector nesta sessão) abriu de fato o painel nativo de
+seleção de arquivo (`sheets of window` foi de 0 para 1 no instante do
+clique) — confirma que o listener é registrado e a IPC do plugin
+`dialog` funciona ponta a ponta. `pnpm tauri build` rodado do zero
+produziu um `.dmg` novo, reinstalado em `/Applications` no lugar do
+antigo. O mesmo teste de clique contra o `.app` de release não pôde ser
+confirmado nesta sessão: a automação de acessibilidade contra um
+binário sem assinatura de código faz o `tccd` encerrar o processo
+(`kTCCServiceAccessibility` negado por falta de entitlement, processo
+identificado como "InvalidCode" no log unificado) — artefato da
+combinação sandbox-de-teste + binário não assinado, não um crash do app
+em uso normal (fica estável por 16s+ sem ser tocado por automação).
+Recomendado teste manual do `.app` de release pelo usuário para fechar
+o critério de aceite.
+
+**Pipeline não afetado**: esta correção só mudou a camada de frontend
+JS. Confirmado por `sha256sum`: `foliant-core` embutido no `.app`
+recém-gerado é byte-idêntico ao binário-fonte em
+`desktop/src-tauri/binaries/foliant-core-x86_64-apple-darwin` (não
+recompilado nesta sessão) — a validação de byte-identidade da Fase 4
+continua válida sem precisar re-rodar o teste completo (nenhuma
+superfície do pipeline mudou).
+
+## Fase 4.2: correção — ACL do plugin shell não cobria o comando `spawn`
+
+**Descoberto pelo teste manual do usuário** no `.app` corrigido pela
+Fase 4.1: "Selecionar…" já funcionava, mas "Converter" falhava com
+`Falha ao iniciar: Command plugin:shell|spawn not allowed by ACL`. Um
+segundo bug, independente do primeiro, que a UI morta da Fase 4.1 tinha
+mascarado (não dava pra chegar a clicar em "Converter" antes daquela
+correção).
+
+**Causa raiz**, confirmada lendo o código-fonte da versão exata do
+plugin fixada em `Cargo.lock` (`tauri-plugin-shell 2.3.6`, via
+`~/.cargo/registry/src/.../tauri-plugin-shell-2.3.6`), não por memória
+da sintaxe de versões anteriores:
+- `permissions/autogenerated/commands/execute.toml` define a permissão
+  `shell:allow-execute` (`commands.allow = ["execute"]`).
+- `permissions/autogenerated/commands/spawn.toml` define
+  `shell:allow-spawn` (`commands.allow = ["spawn"]`) — um identificador
+  **separado**, não uma permissão mais ampla que englobe `execute`.
+- `desktop/src-tauri/capabilities/default.json` (Fase 4) só concedia
+  `shell:allow-execute`.
+- `desktop/src/main.js` nunca chama `.execute()` — chama
+  `Command.sidecar(...).spawn()` (necessário para receber stdout/stderr
+  do sidecar em tempo real via eventos, o que `execute()` não oferece,
+  já que só retorna o resultado final de uma vez). O SDK JS
+  (`node_modules/@tauri-apps/plugin-shell/dist-js/index.js`, função
+  `spawn()`) despacha isso como `invoke("plugin:shell|spawn", ...)`.
+
+A permissão concedida nunca correspondeu ao comando de fato chamado —
+presente desde a Fase 4, não pego porque aquela fase validou o pipeline
+Python/PyInstaller isolado (fora do Tauri) e o empacotamento/tamanho/RAM
+do bundle, mas não incluiu um teste funcional de clicar em "Converter"
+na UI.
+
+**Correção**: em `capabilities/default.json`, identificador trocado de
+`shell:allow-execute` para `shell:allow-spawn`, mantendo o mesmo bloco
+de escopo (`name: "binaries/foliant-core"`, `sidecar: true`, mesma lista
+de validadores de `args`) — escopo continua restrito especificamente ao
+sidecar `foliant-core`, não uma permissão ampla para qualquer comando
+shell.
+
+**Achado adicional durante a correção** (por inspeção de
+`tauri-plugin-shell-2.3.6/src/scope.rs`, função `ShellScope::_prepare`,
+antes de reconstruir — não reportado pelo usuário): a validação de
+argumentos do escopo itera posicionalmente sobre os 8 validadores
+declarados e falha (`Error::MissingVar`) se o array de args real tiver
+menos elementos. `main.js` só incluía `--titulo`/valor quando o campo
+"Título" (opcional na UI, placeholder "(opcional)") estava preenchido —
+6 args em vez de 8 quando vazio. Isso teria quebrado "Converter" de novo
+assim que alguém deixasse "Título" em branco. Corrigido em duas partes:
+`main.js` agora sempre inclui `--titulo` (com `""` como padrão), e o
+validador daquela posição em `default.json` foi relaxado de `.+`
+(exige 1+ caractere; o regex é ancorado `^...$`, então `""` falharia)
+para `.*` (aceita vazio). Confirmado em `foliant.py:597`
+(`titulo = args.titulo or args.pdf_entrada.stem`) que uma string vazia é
+tratada de forma idêntica a omitir a flag — sem mudança de comportamento
+do núcleo.
+
+**Validação**: build reconstruído (`pnpm tauri dev`) fica estável por
+15s+ sem automação tocando o processo, confirmando que
+`capabilities/default.json` continua sendo JSON/schema válido (um erro
+de sintaxe teria falhado em tempo de build). A confirmação visual do
+clique em "Converter" via automação de acessibilidade — a mesma técnica
+que funcionou uma vez na Fase 4.1 — não foi reprodutível nesta sessão: a
+partir da segunda tentativa, o `tccd` passou a negar consistentemente a
+automação de Accessibility contra este binário não assinado (mesmo
+artefato de sandbox da Fase 4.1, com a negação aparentemente cacheada
+pelo TCC após a primeira tentativa falha). **Não foi possível confirmar
+de ponta a ponta nesta sessão que "Converter" gera um `.epub` real** —
+usuário vai validar manualmente. `pnpm tauri build` rodado do zero,
+`.dmg` novo gerado, `.app` antigo removido e substituído em
+`/Applications/Foliant.app`. Checksum do sidecar (`foliant-core`
+embutido idêntico ao arquivo-fonte, não recompilado nesta sessão)
+confirma mais uma vez que o pipeline Python não foi tocado.
+
+## Fase 4.3: correção — PATH mínimo do launchd e renomeação `desktop` → `foliant-desktop`
+
+**Sintoma**: com os dois bugs das Fases 4.1/4.2 corrigidos (seleção de
+arquivo e início de conversão funcionando), o `.app` de produção falhava
+ao converter com `Erro: ferramentas ausentes no PATH: tesseract,
+ebook-convert.`.
+
+**Causa raiz** (diagnóstico do usuário, verificado antes de corrigir):
+apps GUI no macOS são iniciados pelo `launchd` com um `PATH` mínimo do
+sistema — não herdam `.zshrc`/`.bash_profile`. O sidecar `foliant-core`
+é processo filho do app Tauri, então herda esse `PATH` reduzido, não o
+do terminal onde `tesseract`/`ebook-convert` foram symlinkados em
+`/usr/local/bin`. `TESSDATA_PREFIX` (só exportado no `.zshrc`) tem o
+mesmo problema.
+
+Confirmado lendo `tauri-plugin-shell-2.3.6/src/commands.rs`
+(`prepare_cmd`, struct `CommandOptions`) que isso realmente se propaga
+para o sidecar: `env: Option<HashMap<...>>` tem
+`#[serde(default = "default_env")]` com `default_env() -> Some(HashMap::default())`
+— ou seja, quando o JS não passa `options.env` (como é o caso de
+`Command.sidecar(...).spawn()` em `main.js`, sem segundo argumento de
+opções), o código cai no branch `if let Some(env) = options.env { command.envs(env) }`
+com um mapa **vazio**, não no `else { command.env_clear() }`. Um mapa
+vazio passado a `.envs()` é um no-op — não limpa nada — então o
+`std::process::Command` subjacente segue o comportamento padrão do Rust:
+herdar o ambiente **completo** do processo pai (o próprio app Tauri).
+Ou seja, a causa raiz apontada pelo usuário está certa, e a correção tem
+que ficar no ambiente do processo do app (o pai), não em nada
+específico do lado do sidecar/JS.
+
+**Pesquisa antes de implementar** (via busca na web, não assumido de
+memória, já que a sintaxe/API de crates pode mudar): confirmado que esse
+é um problema conhecido do ecossistema Tauri/Electron/apps GUI no
+macOS-Linux em geral, com solução oficial mantida pelo próprio time do
+Tauri —
+[`tauri-apps/fix-path-env-rs`](https://github.com/tauri-apps/fix-path-env-rs).
+No macOS/Linux, a implementação roda o shell de login do usuário
+(`$SHELL -ilc 'env'`) e aplica no processo atual as variáveis capturadas
+dessa saída. A API oferece `fix()` (aplica só `PATH`) e `fix_vars()`/
+`fix_all_vars()` (aplica um subconjunto ou todas as variáveis
+capturadas). Usar `fix_all_vars()` em vez de `fix()` resolve `PATH` e
+`TESSDATA_PREFIX` com o mesmo mecanismo — sem hardcodar nenhum caminho
+específico desta máquina no código Rust (a alternativa óbvia seria
+hardcodar `/usr/local/bin` e
+`~/micromamba/envs/foliant-ocr/share/tessdata` diretamente na chamada do
+sidecar, mas isso quebraria se o usuário reinstalar as ferramentas em
+outro caminho — a solução via shell de login generaliza automaticamente
+para qualquer caminho que o `.zshrc` do usuário de fato exporte).
+
+**Correção**:
+1. `desktop/src-tauri/Cargo.toml`: `fix-path-env` adicionado como
+   dependência git, fixada num commit específico
+   (`rev = "c4c45d503ea115a839aae718d02f79e7c7f0f673"`, resolvido via API
+   do GitHub no momento da correção) — não uma branch flutuante, já que
+   o crate não é publicado no crates.io.
+2. `desktop/src-tauri/src/lib.rs`: `let _ = fix_path_env::fix_all_vars();`
+   chamado como a primeira linha de `run()`, antes de `tauri::Builder`.
+
+**Defesa em profundidade no núcleo Python** (avaliado e implementado,
+pedido explícito do usuário): `foliant.py`, `check_dependencies()` agora
+também checa caminhos absolutos conhecidos
+(`CAMINHOS_ABSOLUTOS_FALLBACK = {"tesseract": "/usr/local/bin/tesseract", "ebook-convert": "/usr/local/bin/ebook-convert"}`)
+quando `shutil.which()` não encontra o binário. Importante: só *checar*
+o caminho absoluto não bastaria — `pytesseract` (chamado depois) e o
+`subprocess.run(["ebook-convert", ...])` continuariam resolvendo pelo
+nome via `PATH` e falhariam do mesmo jeito mais adiante. Por isso o
+fallback, ao achar o binário no caminho conhecido, **também adiciona
+esse diretório ao `PATH` do próprio processo Python**
+(`os.environ["PATH"]`), corrigindo de fato as chamadas seguintes, não só
+o preflight check. Testado isoladamente (não só lido/inferido): com
+`PATH` simulado como `/usr/bin:/bin` (sem `/usr/local/bin`), o fallback
+encontra os binários e corrige o `PATH` do processo; com
+`CAMINHOS_ABSOLUTOS_FALLBACK` esvaziado (simulando binários realmente
+ausentes em qualquer lugar), o comportamento de erro original é
+preservado (`sys.exit(1)` com a mensagem original).
+
+**Sidecar reconstruído**: diferente das Fases 4.1/4.2 (que não tocaram
+`foliant.py`), essa correção mudou o núcleo — `scripts/build-sidecar.sh`
+teve que rodar de novo. Checksum do binário mudou como esperado
+(`f1971521...` → `67e9619e...`). Validado com `foliant-core --help`
+(roda, sai 0) e os dois testes unitários do parágrafo anterior.
+
+**Revalidação de byte-identidade rodada com dado real** (a suposição
+inicial de "mudança isolada, não precisa re-testar" foi contestada
+explicitamente pelo usuário antes de prosseguir para a próxima correção
+— com razão: uma suposição sobre isolamento de uma mudança merece o
+mesmo padrão de evidência das demais). Rodado `python3 foliant.py
+samples/001-080.pdf` com a árvore de antes desta fase
+(`git show HEAD:foliant.py`) e com a árvore atual, comparando os `.epub`
+gerados: 76 arquivos HTML extraídos de cada lado, `diff -rq` recursivo
+com **zero diferenças** fora de `content.opf`/`toc.ncx`/`cover_image.jpg`
+(mesma exceção não-determinística do Calibre documentada desde a Fase
+4). Confirma com evidência real, não só leitura de diff de código, que o
+fix de PATH não afetou o pipeline de OCR/HTML/EPUB.
+
+**Confusão de nomes "desktop" vs "Foliant" — investigada e corrigida**:
+não eram dois apps distintos, um único app com nomes diferentes em
+camadas diferentes do empacotamento. `productName: "Foliant"` no
+`tauri.conf.json` sempre controlou só o nome do bundle final
+(`Foliant.app`, `Foliant_0.1.0_x64.dmg`) — o executável *dentro* do
+bundle (`Foliant.app/Contents/MacOS/<nome>`) vem do `[package] name` do
+`Cargo.toml`, que o bundler do Tauri **não** renomeia para bater com
+`productName` (confirmado inspecionando o `.app` gerado em cada fase
+anterior: o executável sempre se chamava `desktop`, nunca `Foliant`). É
+esse mesmo nome `desktop` que aparece tanto dentro do `.app` de produção
+quanto no binário solto que `pnpm tauri dev` deixa em
+`desktop/src-tauri/target/debug/desktop` — daí a ambiguidade relatada.
+
+**Correção**: `[package] name` em `Cargo.toml` renomeado de `"desktop"`
+para `"foliant-desktop"` (o `[lib] name = "desktop_lib"` não precisou
+mudar — é só o nome interno do crate de biblioteca, nunca visível fora
+do código Rust). Depois do rebuild, o executável passou a se chamar
+`Foliant.app/Contents/MacOS/foliant-desktop`. Os binários soltos antigos
+(`desktop/src-tauri/target/{debug,release}/desktop`, artefatos de build
+gitignored) foram apagados nesta sessão.
+
+**Orientação permanente**: `desktop/src-tauri/target/debug/` é sempre
+saída de desenvolvimento (`pnpm tauri dev`), nunca deve ser tratada como
+o app real. O único artefato válido para uso/teste real é o `.dmg`
+gerado por `pnpm tauri build`
+(`desktop/src-tauri/target/release/bundle/dmg/`), instalado como
+`/Applications/Foliant.app`.
+
+**Validação**: `pnpm tauri build` do zero baixou e compilou a nova
+dependência `fix-path-env` sem erros. `.dmg` novo gerado, `.app` antigo
+removido e substituído em `/Applications/Foliant.app`. Checksum do
+`foliant-core` embutido confere com o sidecar recém-reconstruído.
+**Confirmação visual do fluxo completo até o `.epub` não foi possível
+nesta sessão** — mesma limitação de automação de acessibilidade contra
+binário não assinado das Fases 4.1/4.2 (`tccd` nega a automação depois
+da primeira tentativa bem-sucedida nesta sessão). Validação manual pelo
+usuário pendente antes de fechar.
+
+**Atualização — validado pelo usuário**: fluxo completo testado
+manualmente pelo usuário no `.app` reinstalado — conversão funcionou de
+ponta a ponta, incluindo com um terceiro livro real nunca usado antes
+neste projeto (ver "Terceiro livro de teste" abaixo). As três correções
+desta fase e das Fases 4.1/4.2 estão confirmadas por uso real, não só
+por evidência estática.
+
+**Risco residual explícito sobre o fix de PATH — não tratar como
+"resolvido para qualquer Mac"**: `fix_all_vars()` resolve `PATH`/
+`TESSDATA_PREFIX` em tempo de execução via shell de login do usuário,
+então não depende do nome de usuário nem da estrutura de pastas de uma
+máquina específica *por construção* — mas isso só foi **validado numa
+única instalação real (a do autor, a mesma máquina de desenvolvimento)**,
+nunca numa segunda máquina física com outra configuração de shell
+(`bash` em vez de `zsh`, outro gerenciador de pacotes Python que não
+`micromamba`, `PATH` customizado de outra forma, etc.). O mecanismo é
+robusto por design (não hardcoda nada), mas "testado numa máquina só"
+continua sendo uma amostra de 1 — mesmo padrão de honestidade já usado
+para os limiares de cabeçalho (`LIMIAR_CABECALHO_MINIMO` etc., calibrados
+contra 2 livros) e para o limiar de similaridade do `difflib`
+(`LIMIAR_SIMILARIDADE`, calibrado contra um punhado de pares reais): a
+lógica generaliza por construção, mas a validação empírica é estreita.
+Não reabrir esse texto achando que "generaliza automaticamente" resolve
+sozinho a lacuna de teste em outra máquina — só reduz o risco, não o
+elimina.
+
+**Risco residual do fallback `/usr/local/bin`**: a camada extra em
+`check_dependencies()` assume a convenção padrão do macOS para instalação
+manual de binários de terceiros (`/usr/local/bin`), que é exatamente a
+convenção usada nas instruções de instalação deste próprio projeto
+(topo de `foliant.py`, `sudo ln -s ... /usr/local/bin/tesseract`). Não é
+garantia universal — se o usuário instalar `tesseract`/`ebook-convert`
+em outro caminho fora dessa convenção (ex.: só dentro do `.app` do
+Calibre, sem symlink), o fallback não vai achar. Ela existe como segunda
+linha de defesa *depois* de `fix_all_vars()` já ter tentado resolver via
+shell de login — não como substituto dele.
+
+**Terceiro livro de teste (903 páginas, fora da amostra de calibração)**:
+com as correções desta fase, o usuário converteu
+`Artigos Científicos - Como Redigir, Publicar e Avaliar` (PEREIRA,
+Maurício Gomes) pelo `.app` de produção — livro nunca usado antes nas
+calibrações de detecção de cabeçalho/título das Fases 2-3 (que usaram só
+os livros de 80 e 208 páginas). EPUB gerado tem 903 arquivos HTML
+(confirmado por contagem direta dos arquivos extraídos do `.epub`
+gerado, presente em `~/Desktop`).
+
+Resultado reportado: nenhum cluster de cabeçalho repetido não-vazio
+passou de 6 ocorrências — o único cluster que a lógica de
+`detectar_cabecalhos_repetidos` classificou como cabeçalho de página foi
+um cluster de linha vazia (sem conteúdo real). **Verificado de forma
+independente nesta sessão** (não só aceito por relato): extraído o
+`.epub` gerado e contadas as tags `<h2>` (usadas por
+`construir_html()` especificamente para marcar cabeçalho de seção
+detectado, ver linha ~546) em todas as 903 páginas — **zero páginas**
+têm `<h2>`, confirmando que nenhum cabeçalho de seção foi de fato
+inserido em lugar nenhum do livro. Também rodada uma contagem
+independente e aproximada de linhas iniciais repetidas por página (proxy
+simplificado, não a mesma lógica de clustering com similaridade do
+`foliant.py`): a linha mais repetida foi ruído de OCR de marcador de
+lista (`•`, 193 páginas), não um padrão de cabeçalho de seção — nenhuma
+string de texto real se repetiu de forma consistente entre páginas.
+
+**Isso é ambíguo entre duas explicações, e a ambiguidade não está
+fechada**:
+- **(a)** este livro genuinamente não tem cabeçalho de página repetido
+  no texto OCRizado — layout diferente dos 2 livros de calibração
+  (capítulos de manual de metodologia científica, sem os cabeçalhos de
+  seção repetidos que caracterizavam os livros de calibração); ou
+- **(b)** os limiares (`LIMIAR_CABECALHO_MINIMO = 3`,
+  `LIMIAR_SIMILARIDADE = 0.70`) não estão pegando cabeçalhos reais deste
+  layout específico (ex.: se o layout usa cabeçalho de página só a cada
+  N páginas de forma irregular, nunca atingindo o mínimo de 3
+  ocorrências agrupadas).
+
+A inspeção manual do `<body>` de várias páginas do EPUB gerado (não o
+`<head>`/metadado de título) não encontrou nenhum cabeçalho colado ao
+texto do corpo — o que favorece a explicação (a) (se fosse (b), seria
+esperado ver o texto de um cabeçalho não detectado colado à primeira
+linha de conteúdo real de várias páginas, já que a função só remove o
+cabeçalho do corpo quando o classifica como tal). Mas isso **não fecha a
+ambiguidade de forma definitiva** — um teste real precisaria de mais
+livros com layouts variados (e idealmente uma inspeção manual direta do
+PDF original page a página, não só do HTML de saída) para diferenciar
+(a) de (b) com confiança. Registrado aqui como ponto em aberto, não como
+"funcionou, sem ressalvas" — mesmo padrão de honestidade das seções
+anteriores desta arquitetura.
+
+## Fase 4.4: correção — recuo de linha incorreto ("zigue-zague" visual)
+
+### Sintoma e causa raiz
+
+No EPUB do livro de 903 páginas (PEREIRA), o texto apresentava um
+zigue-zague visual de recuo. Causa raiz confirmada por inspeção direta
+do HTML gerado: `construir_html()` gerava **um `<p>` por linha física do
+scan** (como a linha veio quebrada no OCR), e o CSS aplica
+`text-indent: 1.2em` a todo `<p>` (classe `calibre1` uniforme —
+confirmado que **não é** bug de alternância de classe: 31.900
+parágrafos usam `calibre1` sem exceção). Toda linha do livro ficava
+recuada, não só o início real de cada parágrafo.
+
+### Pesquisa de sinais de layout (dados reais antes de decidir o critério)
+
+Mesma disciplina das Fases 2-3: nada foi implementado antes de
+investigar com números reais. Scripts de pesquisa em
+`scripts/pesquisa_recuo.py` (inspeção visual, salva PNG de cada página)
+e `scripts/pesquisa_recuo_estatistica.py` (agregado estatístico).
+
+**Sinal 1 — posição X (`left`) da primeira palavra da linha**: testado
+contra 3 páginas do livro de 903 páginas (60, 200, 400) e 1 página de
+`samples/001-080.pdf` (30), depois validado em agregado contra 1.379
+linhas (40 páginas do livro de 903 páginas). Resultado — **sinal forte e
+limpo**: distribuição claramente bimodal, aglomerado de linhas de
+continuação em ~40-43px (livro de 903 páginas, scan pouco tortuoso) a
+~44-64px (`samples/001-080.pdf`, página com leve rotação/skew de scan
+fazendo a margem "andar" ao longo da página), e aglomerado de início de
+parágrafo em ~90-116px — um "vale" quase vazio nos buckets de 70-80px
+(2 de 1.379 linhas) separando os dois grupos com folga.
+
+Exemplo real (página 60 do livro de 903 páginas, esquerda=posição X em
+pixels de renderização a 200 DPI):
+
+| Linha | left | Classificação |
+|---|---|---|
+| "Nas primeiras revisões, o autor se encarrega..." | 105 | início de parágrafo |
+| "suas intenções. Não raramente, no caso..." | 43 | continuação |
+| "são necessárias para que ele se torne..." | 43 | continuação |
+| ... (mais 5 linhas de continuação, left 42-43) | | |
+| "Durante as releituras, o autor tem a possibilidade..." | 105 | início de parágrafo |
+
+**Sinal 2 — hífen de quebra de palavra no fim da linha anterior**:
+confirmado raro nos dados reais (10/1.379 linhas = 0,73%), mas
+praticamente inequívoco quando ocorre — usado como *override* sobre o
+sinal 1 (força continuação mesmo que a próxima linha, por algum motivo,
+tivesse `left` alto).
+
+**Sinal 3 — espaçamento vertical (gap Y) TESTADO E DESCARTADO**: mediana
+do gap para linhas de continuação (`left<=60`) foi 23,3px contra 28,1px
+para linhas de possível início de parágrafo — diferença pequena demais,
+com distribuições fortemente sobrepostas (ex.: grupo de "possível
+início" teve gap mínimo de -543,9px e máximo de 535px, incluindo
+artefatos de quebra de coluna/rodapé/página) — não seria confiável nem
+combinado com o sinal 1. Não implementado.
+
+**Sinal de pontuação final considerado e não implementado**: nas páginas
+reais inspecionadas, todo início de parágrafo real já tinha o recuo
+físico presente — nenhum caso real de falso negativo do sinal 1 sozinho
+foi encontrado que justificasse um segundo sinal. Complexidade não
+comprovada por dado real não foi adicionada; revisitar se um
+contra-exemplo real aparecer.
+
+**Cluster incomum investigado**: a distribuição agregada mostrou um pico
+secundário em `left≈630-660` (29 linhas). Inspecionado diretamente
+(`scripts/pesquisa_recuo_outliers.py`) e confirmado: é uma página de
+checklist numerado (itens tipo "1b", "2b", "9", "15"...) — cada item já
+é uma entrada lógica separada, então classificá-los como "início de
+parágrafo" (o que o critério faz, dado o `left` bem acima da mediana da
+página) é o comportamento correto, não um artefato a corrigir.
+
+### Critério final
+
+`LIMIAR_RECUO_DELTA_PX = 35`: uma linha é início de parágrafo quando seu
+`left` excede a **mediana de `left` de todas as linhas da própria
+página** em mais que 35px — relativo à página, não um valor absoluto de
+livro, porque a margem absoluta varia com rotação/skew do scan (ver
+`samples/001-080.pdf` acima). Mediana por página (não por livro) para
+caber na arquitetura de streaming existente — cada página já é
+processada isoladamente. Delta de 35px cai no meio do vale observado
+(70-80px absoluto, mediana de página ~40-43px), com ~15-20px de folga
+para qualquer lado antes de tocar um dos dois aglomerados reais.
+
+**RISCO RESIDUAL EXPLÍCITO — não tratar como validado para qualquer
+livro**: calibrado só no livro de 903 páginas (fonte real do defeito
+relatado, com validação em agregado de 1.379 linhas) mais uma única
+página avulsa de `samples/001-080.pdf`. **Não foi testado contra os
+livros de 208 páginas nem contra o restante de `samples/001-080.pdf`**
+antes de escrever o código — a validação desses livros veio depois,
+como confirmação end-to-end (ver "Validação" abaixo), não como parte da
+calibração do limiar em si. Mesmo padrão de honestidade dos outros
+limiares deste arquivo (`LIMIAR_RAZAO_TITULO`, `LIMIAR_CABECALHO_MINIMO`
+etc.): a lógica generaliza por construção (é relativa à própria página,
+não hardcoded), mas a amostra de calibração é estreita.
+
+**Acoplamento com `RENDER_DPI`**: o delta de 35px foi medido a 200 DPI
+(`RENDER_DPI` atual). Como a indentação física em pixels escala com a
+resolução de renderização, mudar `RENDER_DPI` sem recalibrar
+`LIMIAR_RECUO_DELTA_PX` na mesma proporção invalidaria este critério —
+mesmo tipo de acoplamento já documentado para outros limiares baseados
+em pixels/altura absoluta neste arquivo.
+
+### Escopo: os dois caminhos (OCR e nativo) — histórico da decisão
+
+**Nota de leitura**: esta seção documenta a decisão de escopo ORIGINAL
+(escrita antes da correção abaixo) e por que ela mudou — não descreve o
+estado final do código. Para o critério nativo realmente implementado,
+ver "Correção real feita em duas etapas" logo abaixo e
+`LIMIAR_RECUO_DELTA_PONTOS_NATIVO`/`LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO`
+no código.
+
+Decisão original: aplicar a fusão de linhas só ao caminho OCR
+(`extrair_linhas_ocr` → `linhas_inicio_paragrafo`), mantendo o caminho
+de texto nativo (`pagina.get_text("text").strip()`) exatamente como
+antes — justificada, no momento em que foi tomada, pela suposição de que
+"os 3 livros de teste deste projeto são 100% escaneados (nenhum tem
+camada de texto nativa)" e que o arquivo
+`samples/sinteticos/livro_sintetico.pdf` mencionado em comentários
+antigos do código não existe mais no projeto (isso último confirmado por
+busca no disco, continua verdadeiro). **Essa suposição sobre os 3 livros
+nunca tinha sido reconferida depois que um QUARTO livro (PEREIRA, 903
+páginas) entrou como caso de teste real** — e é justamente esse livro
+que tem texto nativo de verdade. A decisão de escopo foi corrigida assim
+que isso foi descoberto (ver próxima seção) — mantida aqui só como
+registro de como o raciocínio evoluiu, não como o estado atual.
+
+### Ordem de operações: limpeza de ruído ANTES da fusão de linhas
+
+Investigado, não assumido: `limpar_linha()` (remove marcador decorativo
+do início da linha) precisa rodar em CADA linha crua, individualmente,
+ANTES de uni-las em parágrafo — não depois. Achado real em
+`samples/001-080.pdf` (página 30, bloco de citação): um marcador
+decorativo (`"*"`, provável borda esquerda de citação lida pelo OCR)
+repete no início de **cada linha física** do bloco, não só da primeira
+("* desestruturados e formulados..." seguida de "* indagar: 'Como
+funciona a mente?'..."). Se a fusão rodasse antes da limpeza, só o `"*"`
+da primeira linha do parágrafo seria removido — os das linhas internas
+ficariam colados no meio da frase final. Limpar por linha crua primeiro,
+unir depois, remove o marcador de todas.
+
+### Implementação
+
+- `extrair_linhas_ocr()`: passou a capturar também `left` (posição X da
+  primeira palavra) por linha, não só texto e altura.
+- `linhas_inicio_paragrafo()`: nova função, aplica o critério acima
+  (mediana da página + delta, com override de hífen) e retorna uma lista
+  de booleanos alinhada 1:1 com as linhas da página.
+- Cache (`paginas.jsonl`) ganhou um campo novo, `inicio_paragrafo`
+  (lista de bool, ou `null` no caminho nativo) — persistido por
+  `primeira_passada()`, consumido por `construir_html()`.
+- `construir_html()`: ao remover linhas de título/cabeçalho do início da
+  página, a lista `inicio_paragrafo` é fatiada em lockstep (mesmos
+  índices removidos). A linha que sobra no topo é sempre forçada para
+  `True` (início) — a classificação pré-calculada dela era relativa à
+  linha ORIGINAL anterior (possivelmente uma linha de título/cabeçalho
+  já removida), que não existe mais nesse ponto.
+- `unir_linhas_em_paragrafos()`: nova função, faz a fusão de fato — junta
+  com espaço, ou sem espaço removendo o hífen quando a linha anterior
+  termina em `-`.
+
+### Correção real feita em duas etapas — a primeira estava incompleta
+
+Registrado aqui, não escondido: a primeira versão desta correção só
+tratava o caminho OCR (`extrair_linhas_ocr`/`linhas_inicio_paragrafo`),
+calibrada com dados reais obtidos renderizando+OCRizando páginas do
+livro de 903 páginas via `scripts/pesquisa_recuo*.py`. Só ao rodar o
+pipeline de PRODUÇÃO (`extrair_texto_pagina`, não o script de pesquisa)
+na mesma página para conferir o resultado é que ficou claro que
+`inicio_paragrafo` voltava `None` — o PDF do livro de 903 páginas **tem
+texto nativo real** (`pagina.get_text("text")` retorna texto direto,
+sem qualquer OCR), e `extrair_texto_pagina()` sempre prioriza esse
+caminho quando disponível (linha `if texto_nativo: ...`). A causa raiz
+do sintoma relatado nunca passava pelo código recém-corrigido — o
+script de pesquisa tinha renderizado+OCRizado a página manualmente, sem
+nunca checar se a produção usaria esse caminho para ESTE PDF específico
+antes de decidir o escopo da correção.
+
+Isso invalida a alegação anterior desta mesma seção ("não existe nenhum
+PDF de texto nativo real neste projeto") — nunca tinha sido reconferida
+depois que o livro de 903 páginas entrou como caso de teste real. A
+lição prática: `pagina.get_text("text")` (ou equivalente) precisa ser
+checado ANTES de decidir onde calibrar/implementar uma correção baseada
+em geometria de página, não depois.
+
+Corrigido de fato: implementado o critério equivalente para o caminho
+nativo (`extrair_linhas_nativas` passou a capturar `left` do bbox de
+cada linha; `linhas_inicio_paragrafo()` generalizada para aceitar um
+limiar de delta e, opcionalmente, um override por razão de tamanho de
+fonte), calibrado com o MESMO livro de 903 páginas via
+`pagina.get_text("dict")` — ver `LIMIAR_RECUO_DELTA_PONTOS_NATIVO` e
+`LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO` no código para os números e o
+raciocínio completos. Confirmado por reconstrução byte-idêntica (5
+páginas reais, incluindo página vazia e última página do livro) que
+trocar a fonte de `texto` de `pagina.get_text("text")` direto para
+`"\n".join(linhas reconstruídas)` não muda o conteúdo extraído — só
+garante alinhamento 1:1 com `inicio_paragrafo`.
+
+**RISCO RESIDUAL EXPLÍCITO — critério nativo é um TERCEIRO ponto de
+calibração, mais estreito que os dois do caminho OCR, não coberto pelos
+testes de 80/208 páginas**: `LIMIAR_RECUO_DELTA_PONTOS_NATIVO` e
+`LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO` foram calibrados só com 3 páginas
+(60, 200, 400) de UM livro (PEREIRA, 903 páginas) — a mesma fonte usada
+para calibrar `LIMIAR_RECUO_DELTA_PX` (caminho OCR), mas via um caminho
+de código completamente diferente (`get_text("dict")`, não
+`image_to_data()`). Não existe um segundo livro de texto nativo real
+neste projeto para cross-validar o critério nativo contra um layout
+diferente — os testes de `samples/001-080.pdf` (80 páginas) e
+`samples/livro_completo_208pg.pdf` (208 páginas) descritos na tabela
+abaixo **validam o caminho OCR, não o nativo** (ambos os livros são
+100% escaneados, sem texto nativo) — não servem como validação adicional
+do critério nativo, mesmo aparecendo na mesma tabela de resultados.
+
+**Resumindo os três graus de confiança, para não confundir**:
+- Critério OCR (`LIMIAR_RECUO_DELTA_PX`): calibrado com 1.379 linhas
+  agregadas de 40 páginas do livro de 903 páginas + 1 página avulsa de
+  `samples/001-080.pdf`, e **validado end-to-end contra 2 livros
+  completos** (80 e 208 páginas, 100% via este caminho).
+- Critério nativo (`LIMIAR_RECUO_DELTA_PONTOS_NATIVO` +
+  `LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO`): calibrado com só 3 páginas
+  avulsas de exame direto de geometria, e **validado end-to-end só
+  contra um subconjunto de 24 páginas do único livro nativo real do
+  projeto** — nenhum livro completo, nenhum segundo livro. O grau de
+  confiança aqui é bem mais baixo que o do caminho OCR, apesar dos dois
+  critérios terem nascido da mesma investigação.
+
+**Limitação conhecida com defeito visual real confirmado — listas/
+citações com recuo em bloco ou "pendurado"**: o critério assume o
+padrão comum de parágrafo (só a primeira linha recuada); listas
+numeradas com recuo pendurado (continuação MAIS recuada que o item
+seguinte, ex. referências bibliográficas) e blocos de item com recuo
+uniforme fundem incorretamente — não é só "não melhora", é uma
+**regressão real** confirmada por comparação byte a byte antes/depois
+em 3 páginas reais do livro de 903 páginas (referências bibliográficas
+de páginas diferentes ficando coladas no mesmo `<p>`, marcador de item
+enterrado no meio do texto). Backlog, prioridade baixa-média — ver
+`TASKS.md` para a evidência completa (HTML antes/depois) e a direção de
+correção futura considerada (detectar marcador de item tipo `^\d+\.\s`
+como sinal adicional, não implementado, não calibrado).
+
+### Validação
+
+Rodado o pipeline completo (não uma função isolada, não um script de
+pesquisa) contra os 3 livros de teste:
+
+| Livro | Caminho usado | Exit code | Páginas confirmadas (`id="pg-N"` no HTML final) | Resultado |
+|---|---|---|---|---|
+| Subconjunto de 24 páginas do livro de 903 páginas (PEREIRA) | nativo | 0 | 24/24 | Parágrafos reais fundidos corretamente (ex.: 8 linhas físicas → 1 `<p>`); subtítulos de seção protegidos (não grudaram no corpo) — ver exemplos concretos em `TASKS.md` |
+| `samples/001-080.pdf` | OCR | 0 | 80/80 | Parágrafos de 100-1444 caracteres (antes: ~70/`<p>`, um por linha física) |
+| `samples/livro_completo_208pg.pdf` | OCR | 0 | 208/208 | Parágrafos de 101-910 caracteres |
+
+Contagem de páginas verificada por `grep` direto nos arquivos HTML
+extraídos do `.epub` gerado (`id="pg-1"` até `id="pg-N"`, todas
+presentes), não assumida a partir do log de execução — inclui um
+achado real durante essa checagem: a primeira tentativa de contar
+páginas usando o padrão `class="pagina" id="pg-N"` reportou 4 páginas
+"faltando" em `samples/001-080.pdf`; investigado antes de assumir bug
+real — o Calibre insere um `<div id="pg-N" style="height:0pt"></div>`
+como âncora exatamente no ponto onde divide o HTML em múltiplos
+arquivos, e esse `<div>` não bate com o padrão mais estrito de busca
+(que exigia `class="pagina"` imediatamente antes). Um `grep` mais amplo
+(só `id="pg-N"`, sem exigir `class=`) confirmou as 80/80 páginas
+presentes — falso alarme do meu próprio critério de busca, não do
+código do pipeline.
+
+Não rodado o livro de 903 páginas completo (só o subconjunto de 24
+páginas — as mesmas já usadas na pesquisa de sinais, páginas 59-66,
+199-206, 399-406, extraídas com `pymupdf.insert_pdf`): no ritmo
+observado nos outros dois livros, 903 páginas levariam horas nesta
+máquina — desproporcional para uma validação de formatação que não
+depende do livro inteiro. O pipeline rodado é o mesmo código de
+produção, sem nenhuma função mockada, só com menos páginas de entrada.
