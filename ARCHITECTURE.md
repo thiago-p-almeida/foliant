@@ -1853,3 +1853,325 @@ original).
   fechar o critério de aceite com 100% de confiança — mesmo padrão já
   usado nas Fases 4.1-4.3 para esse tipo de limitação.
 
+## Inspeção de qualidade: 4º livro de teste real, 1º em inglês (2026-09-04)
+
+**Contexto**: `Fundamentals of Data Engineering (Third Early Release)`
+(Joe Reis & Matt Housley), 210 páginas, processado pelo `.app` real com
+`--lang por` (o app ainda não detecta idioma automaticamente — Parte 2
+do backlog de UI/UX, ver seção anterior). Primeiro livro de teste em
+inglês do projeto; os 3 anteriores (Gil 80/208pg, PEREIRA 903pg) são
+todos em português. Inspeção pura — nenhuma correção de código aplicada
+nesta rodada, conforme escopo definido.
+
+### Achado 0 (pré-requisito): este PDF não é "provavelmente escaneado" — é quase 100% nativo
+
+Antes de investigar qualidade de OCR em inglês, checado com dado real
+(`pagina.get_text("text")` para as 210 páginas) qual caminho cada
+página realmente usa: **203 de 210 páginas (96,7%) têm texto nativo
+real** — só **7 páginas usam o caminho OCR** (pg-1, 11, 19, 28, 113,
+154, 159), e as 7 são páginas de imagem cheia (gráficos/infográficos,
+`get_images()` retorna exatamente 1 imagem cobrindo a página inteira em
+cada uma, texto nativo vazio). Isso muda a premissa do item 1 do
+meta-prompt original ("amostrar 4-5 páginas do meio do livro, caminho
+OCR") — não há prosa real passando pelo caminho OCR neste livro para
+comparar contra o baseline em português.
+
+### Item 1 — qualidade do OCR em inglês com o modelo `por`: sem amostra de prosa disponível neste livro
+
+Dado que só 7 páginas usam OCR e todas são gráficos/infográficos sem
+prosa, não há como avaliar "qualidade de reconhecimento de texto
+corrido em inglês" a partir deste livro especificamente — o resultado
+é sobre um tipo de conteúdo (rótulos de eixo, texto embutido em
+imagem, muito degradado mesmo antes de qualquer questão de idioma) que
+não representa prosa normal em nenhum idioma. Texto OCR real das 7
+páginas, para registro:
+
+| Página | Conteúdo da imagem | Texto OCR (`por`), amostra |
+|---|---|---|
+| pg-11 | Gráfico Google Trends | `"CoogeTends Ene", "À bigéita", "Sea tem", "United States 1"` |
+| pg-19 | Infográfico "Data Science Hierarchy of Needs" | `"TRE DATA SCIENCE", "AJSTESTNG", "SUPIE ML ALSORTANS"` |
+| pg-28 | Gráfico de barras (ocupações em crescimento) | `"Fetest Grong Tech Oocupatins (4)"`, resto ruído simbólico |
+| pg-113 | Gráfico/tabela | `"isa pm", "Vain 20 October 01", "ARMA AKONONCHA"` |
+| pg-154 | Diagrama do ciclo de vida | `"Data Engineering Lie Cycle", "GENERATION", "UNDERCURRENTS"` (parcialmente legível) |
+| pg-159 | Gráfico "Bounded Data" | `"Bounded Data"`, resto numérico/símbolos |
+
+**Observação real, não conclusiva**: em pg-113, o modelo `por` produziu
+fragmentos com "cara" de português mesmo lendo conteúdo majoritariamente
+numérico/inglês em imagem (`"ARMA AKONONCHA"`, `"Vain 20 October"`) —
+consistente com o corretor de idioma do Tesseract enviesando glifos
+ambíguos para formas mais próximas do dicionário `por`. Não é uma prova
+controlada (o conteúdo já estava muito degradado por ser gráfico, não
+texto), mas é um sinal a favor de que usar `por` para ler inglês real
+provavelmente distorce mais do que o neutro esperado — só não há dado
+deste livro que isole esse efeito de forma limpa.
+
+**Implicação real para a decisão da Parte 2**: para este tipo de
+documento — PDF "born-digital" de e-book early-release, texto nativo
+quase completo — a escolha de idioma do OCR importa muito pouco na
+prática, porque o caminho nativo (que domina 96,7% do livro) é
+extração de texto direta, sem OCR, portanto sem nenhuma dependência de
+idioma. Isso não testa nem invalida a necessidade de detecção de
+idioma para PDFs **escaneados** em inglês (nenhum existe ainda no
+projeto) — só mostra que, para a classe de PDF nativo/early-release,
+a urgência da Parte 2 é menor do que se assumia.
+
+### Item 2 — padrão confirmado: legenda/rótulo de figura corrompido promovido a "título de capítulo" (2ª ocorrência)
+
+Confirma o padrão já visto no livro do Gil (`ARCHITECTURE.md`, Fase 3,
+`"COMO DELINEAR UM Ed tita: DE CRIQRLES"`, página do fluxograma
+índice 105). Aqui: `PROGRESS`/log real mostrou `Detected chapter:
+Fetest Grong Tech Oocupatins (4)` — o TOC do `.epub` confirma isso como
+entrada real (`toc.ncx`, `playOrder="3"`, entre "Chapter 1" e "Chapter
+2").
+
+**Estrutura confirmada com dado real** (`pagina.get_text("text")` e
+`pytesseract.image_to_data()` reais para a página, não suposição):
+pg-28 tem **zero texto nativo** e **exatamente 1 imagem** cobrindo a
+página inteira (um gráfico de barras) — estrutura idêntica à página do
+fluxograma do Gil (`get_images()` também retornava "a página inteira"
+lá, conforme já documentado na Fase 4.5). O OCR dessa imagem produz 24
+"linhas" — a esmagadora maioria são fragmentos de 1-4 caracteres
+(rótulos de eixo, marcas de grade do gráfico mal lidos: `"|"`, `"s"`,
+`"="`, `"Ea"`, `"EE"`...):
+
+| Linha OCR | Altura (px) | Razão à mediana da página | Nº caracteres |
+|---|---|---|---|
+| `"Fetest Grong Tech Oocupatins (4)"` (promovida a título) | 59,0 | **2,11x** | 33 |
+| `"PE NO Gon Pet)"` | 52,0 | 1,86x | 14 |
+| `"=="` (ruído puro) | 186,0 | **6,64x** | 2 |
+| `"E MR"` | 83,0 | 2,96x | 4 |
+| `"EE"` (ruído puro) | 82,0 | 2,93x | 2 |
+| mediana da página | **28,0** | 1,0x (referência) | — |
+
+**Mecanismo confirmado**: a mediana de 28,0px, usada como linha de base
+para o critério de título (`LIMIAR_RAZAO_TITULO = 2.0`), é ela mesma
+calculada sobre uma população quase toda ruído — não existe "corpo de
+texto real" nesta página para servir de referência (é uma imagem cheia,
+sem prosa nenhuma). Contra essa mediana degenerada, o único fragmento
+razoavelmente legível e comprido o bastante (`"Fetest Grong Tech
+Oocupatins (4)"`, 33 caracteres — na prática é o título/legenda embutido
+no próprio gráfico, "Fastest Growing Tech Occupations") cruza a razão
+de 2,11x e o mínimo de caracteres (`LIMIAR_TITULO_MIN_CHARS = 6`).
+Fragmentos ainda mais desproporcionais (`"=="` a 6,64x, `"EE"` a 2,93x)
+só não são promovidos porque são curtos demais (2 caracteres) — ou seja,
+o filtro de comprimento mínimo é o único motivo de não haver MAIS
+falsos positivos nesta mesma página, não o critério de altura.
+
+**A legenda real da figura sobreviveu, ilesa, na página SEGUINTE**: `pg-29`
+contém, como texto nativo normal, `"Figure 1-10. Data engineering is the
+fastest-growing tech occupation (2020)"` — a legenda de verdade (correta,
+sem ruído) está descrita em prosa na página seguinte à imagem, não
+extraída da própria imagem. O que virou "título de capítulo" é uma
+leitura ruidosa de texto **dentro do próprio gráfico** (provavelmente o
+título do gráfico em si, renderizado em fonte grande dentro da imagem),
+não a legenda real do livro.
+
+**O que as duas ocorrências (Gil pg-105, este livro pg-28) têm em
+comum, estruturalmente**:
+1. A página inteira é **uma única imagem** (`get_images()` retorna 1
+   imagem cobrindo ~100% da área da página) — sem nenhum texto nativo.
+2. O OCR dessa imagem produz uma população de "linhas" dominada por
+   ruído de 1-4 caracteres (rótulos de eixo, elementos decorativos,
+   fragmentos de diagrama) — não uma distribuição de alturas de "corpo
+   de texto real" que o critério de mediana pressupõe implicitamente.
+3. Um fragmento de tamanho de fonte incomum mas comprimento
+   "razoável" (aqui, texto embutido no próprio gráfico/figura) cruza os
+   dois filtros (altura E comprimento) por coincidência, sem ser um
+   título de capítulo de verdade.
+
+**Sinal adicional investigado, conforme pedido no item 2 — "proximidade
+de imagem extraída" já é, na prática, o MESMO sinal que identifica a
+página como candidata a este defeito**: como `extrair_capa()` (Fase 4.5)
+já usa `get_images()` por página, um sinal de baixo risco e
+estruturalmente fundamentado seria: **antes de aceitar um título
+detectado por `detectar_titulo()` no caminho OCR, checar se a página já
+foi identificada como "página de imagem cheia" (native text vazio E
+`get_images()` cobrindo quase 100% da área da página) — se sim, suprimir
+a detecção de título nessa página inteira**, não só o candidato
+específico. Diferente da tentativa de supressão de glifo decorativo já
+tentada e abandonada na Fase 4.5 (colidia com texto real de altura
+parecida, ex. `"se"` a 2,73x), este sinal não usa altura/razão como
+critério — usa a AUSÊNCIA de texto nativo combinada com a presença de
+uma imagem de página inteira, que é uma propriedade estrutural da
+página, não do fragmento de texto individual. **Não implementado nesta
+rodada** (fora de escopo — tarefa de inspeção), mas é a direção
+recomendada mais promissora encontrada até agora para este padrão,
+porque ataca a causa estrutural (página é 100% figura) em vez de tentar
+achar mais um limiar de altura que sobreviva a mais um caso real.
+
+> **RISCO RESIDUAL — 2 ocorrências em 2 livros diferentes confirma
+> padrão, não uma prova geral.** Ambas as ocorrências conhecidas
+> (Gil pg-105, FDE pg-28) são páginas de figura/gráfico de página
+> inteira. Não se sabe se o sinal proposto (native vazio + imagem
+> cobrindo a página) cobriria 100% dos casos futuros sem nunca gerar
+> falso positivo do lado oposto (suprimir um título real que
+> genuinamente caia numa página com imagem grande) — não testado.
+
+### Item 3 — TOC (6 entradas, 210 páginas): confirmado, bate com a hipótese do meta-prompt
+
+TOC real (`toc.ncx`): **6 entradas** — "Fundamentals of Data
+Engineering" (capa/título, `playOrder=1`), "Chapter 1. Data Engineering
+Described", "Fetest Grong Tech Oocupatins (4)" (o falso positivo do
+item 2), "Chapter 2. The Data Engineering Lifecycle", "Chapter 3.
+Choosing Technologies Across the Data Engineering Lifecycle", "Chapter
+4. Ingestion". Confirma exatamente a hipótese do meta-prompt: título do
+livro + 4 capítulos reais + 1 legenda corrompida = 6. **Nenhum capítulo
+real ficou de fora do TOC** — os 4 capítulos genuínos deste early
+release estão todos presentes e corretamente nomeados (o nome do
+capítulo, extraído do texto nativo real, saiu perfeito nos 4 casos —
+diferente da legenda corrompida, que só existe porque veio do caminho
+OCR de uma imagem).
+
+A entrada 1 (`"Fundamentals of Data Engineering"`, o título do livro na
+capa) também é um título de capítulo detectado — comportamento
+consistente com o `livro_split_000.html` sendo a página de rosto (não
+um erro; mesmo tipo de entrada de título já aparece nos livros de
+calibração em português quando a capa/rosto tem uma linha de texto
+grande o bastante para cruzar `LIMIAR_RAZAO_TITULO`).
+
+### Item 4 — cabeçalho repetido em inglês: **falso positivo real confirmado, não apenas perda de recall**
+
+Log real da análise de cabeçalhos (`agrupar_cabecalhos`, 210 páginas):
+**só 2 clusters cruzaram `LIMIAR_CABECALHO_MINIMO = 3`** — todos os
+outros ~90 clusters distintos observados têm contagem 1-2. Isso por si
+só já é forte evidência a favor da explicação (a) já registrada como
+ambígua na Fase 4.3 para o PEREIRA: **este livro genuinamente não tem
+cabeçalho de página repetido** (formato early-release de e-book, cada
+página começa direto no meio da prosa corrida, sem cabeçalho de seção
+impresso como nos livros de calibração em português). Essa é a 2ª
+confirmação real dessa explicação, em 2 livros/formatos diferentes.
+
+**Mas os 2 clusters que CRUZARAM o limiar não são cabeçalhos reais —
+são falsos positivos, com conteúdo real removido do EPUB, confirmado
+por inspeção do HTML final:**
+
+**Cluster 1** (contagem=3): `'fundamentals of data'`, `'fundamentals of
+data engineering'`, `'this book provides a snapshot of data engineering
+today to the fullest'` — 3 frases de páginas DIFERENTES e sem relação
+estrutural (título da capa + primeira frase real da introdução), sem
+nada em comum a não ser vocabulário temático do livro inteiro.
+
+Confirmado no PDF original (`pagina.get_text`) e no `.epub` gerado que
+a linha foi de fato removida, **cortando uma frase real ao meio**:
+
+| | Conteúdo |
+|---|---|
+| PDF original, pg-7, início | `"This book provides a snapshot of data engineering today. To the fullest\nextent, we're focusing on..."` |
+| `.epub` gerado, pg-7 | `<p>extent, we're focusing on the "immutables" of data engineering...</p>` — **começa cortado no meio da frase**, a primeira sentença inteira ("This book provides a snapshot of data engineering today.") sumiu |
+
+**Cluster 2** (contagem=3): `'figure 21 components and undercurrents of
+the data engineering lifecycle'`, `'figure 27 the major undercurrents of
+data engineering'`, `'undercurrents'` — 3 legendas de figuras
+DIFERENTES (Figura 2-1 e Figura 2-7) mais uma linha solta ("Undercurrents",
+provavelmente um subtítulo de seção em outra página), sem serem o mesmo
+cabeçalho.
+
+| | Conteúdo |
+|---|---|
+| PDF original, pg-53, início | `"Figure 2-1. Components and undercurrents of the data engineering lifecycle\nThe Data Lifecycle Versus the Data Engineering Lifecycle"` |
+| `.epub` gerado, pg-53 | `<p>The Data Lifecycle Versus the Data Engineering Lifecycle</p>` — a legenda real da Figura 2-1 **desapareceu por completo** |
+
+**Causa raiz identificada com precisão, não suposição** —
+`_STOPWORDS_CABECALHO` (linha ~211) é **uma lista só de stopwords em
+português** (`"como", "a", "as", "o", "os", "um", "uma", "de", "e",
+"que", "do", "da", "dos", "das", "em", "para"`). Para texto em inglês,
+palavras funcionais como `"of"`, `"the"`, `"to"`, `"this"`, `"and"`
+**nunca são filtradas** e sobrevivem em `palavras_conteudo()` como se
+fossem palavras de conteúdo reais — inflando artificialmente a
+similaridade de contenção entre frases sem relação de verdade, só por
+compartilharem o vocabulário genérico do livro inteiro ("data
+engineering", que aparece em quase toda página de um livro cujo assunto
+é exatamente esse).
+
+**Confirmado por simulação direta com o código de produção** (não só
+teoria): recalculado `similaridade_cabecalho()` para o par do Cluster 1
+removendo manualmente `"of"` da lista de palavras de conteúdo:
+
+| Par | Similaridade real (stopwords atuais, só PT) | Similaridade simulada (com "of"/"the"/"to"/"this" como stopword) |
+|---|---|---|
+| Cluster 1 (`"This book provides..."` vs. `"Fundamentals of Data Engineering"`) | **0,75** (cruza o limiar 0,70) | **0,667** (fica ABAIXO do limiar — não teria clusterizado) |
+| Cluster 2 (`"Figure 2-1..."` vs. `"Figure 2-7..."`) | **0,857** | **0,80** (continua acima do limiar — a correção de stopwords sozinha NÃO resolveria este caso) |
+
+Ou seja: a lacuna de stopwords em inglês explica e resolveria o
+Cluster 1 de forma direta e calibrada (dado real, não estimativa), mas
+**não é suficiente sozinha** para o Cluster 2 — ali a colisão vem de
+sobreposição de vocabulário genuinamente temática ("figure", "data",
+"engineering", "undercurrents" aparecendo em várias legendas de figura
+do mesmo capítulo), um problema estrutural diferente (não é sobre
+stopwords, é sobre um livro com vocabulário muito concentrado tendo
+poucas palavras de conteúdo "distintivas" o bastante por linha curta).
+
+**Achado adicional sobre o Cluster 2**: a linha isolada `"Undercurrents"`
+(uma única palavra de conteúdo) bate 100% de contenção contra QUALQUER
+linha mais longa que contenha essa palavra — o mesmo mecanismo de
+"encadeamento por fragmento curto" já corrigido para OCR truncado na
+Fase 2 (canônico = membro com mais palavras), mas aqui o "fragmento
+curto" não é truncamento de OCR, é uma linha real e completa (um
+subtítulo de seção de uma só palavra) — o `canonico` do cluster (a
+legenda mais longa) acaba absorvendo essa linha de conteúdo genuíno
+comparando contra si mesma, não contra um fragmento degradado.
+
+> **RISCO RESIDUAL — primeiro falso positivo REAL confirmado do
+> detector de cabeçalho, não apenas hipotético.** Diferente do risco já
+> registrado na Fase 2 (cenário hipotético de "frase de transição
+> incidental repetida" nunca observado), este é um caso real, observado,
+> com conteúdo genuíno removido do EPUB. Livros com vocabulário muito
+> concentrado num tema único (comuns em não-ficção técnica/monografias)
+> e SEM cabeçalho estrutural real (o que já reduz a barra de contagem
+> mínima para praticamente qualquer coincidência de 3 páginas) são o
+> perfil de risco identificado. **Direção de correção recomendada, não
+> implementada nesta rodada** (fora de escopo — tarefa de inspeção):
+> (1) unir a lista de stopwords em português com uma lista equivalente
+> em inglês (resolve o Cluster 1, calibrado e confirmado acima); (2)
+> para o padrão do Cluster 2 (vocabulário temático genuinamente
+> compartilhado), considerar não tratar como cabeçalho quando NENHUM par
+> de membros do cluster bate numa comparação mais rigorosa (ex.: um
+> limiar de similaridade mais alto, ou uma exigência de que o cluster
+> tenha pelo menos 1 repetição EXATA da string normalizada, não só por
+> contenção) — não calibrado, precisa de mais exemplos reais antes de
+> qualquer mudança de limiar (mesma disciplina já usada para os outros
+> limiares deste arquivo).
+
+### Item 5 — formatação de parágrafo (recuo/zigue-zague): sem regressão, generaliza bem
+
+Inspecionadas páginas de prosa corrida em pontos espalhados do livro
+(pg-7, pg-30, pg-80, pg-150) — todas com parágrafos grandes e coesos
+num só `<p>`, sem o padrão de zigue-zague (um `<p>` por linha física)
+já corrigido na Fase 4.4. Livro 100% caminho nativo nas páginas de
+prosa (só as 7 páginas de imagem cheia usam OCR — ver Achado 0), então
+o critério exercitado é o `LIMIAR_RECUO_DELTA_PONTOS_NATIVO` (calibrado
+originalmente só contra o PEREIRA) — **esta é a segunda validação
+end-to-end real desse critério nativo, contra um segundo livro,
+diferente do único usado na calibração original**, reduzindo (mas não
+eliminando) o risco residual já registrado na Fase 4.4 sobre esse
+critério ter sido calibrado com só 1 livro.
+
+Achado incidental menor, não uma regressão: em pg-80, um fragmento
+solto (`"2"`, provavelmente número de nota de rodapé) sobrevive como um
+`<p>` próprio de 1 caractere, separado do parágrafo principal —
+cosmético, mesma categoria de ruído residual já aceita em outras partes
+do pipeline (ex. dígitos de sumário, Fase 1).
+
+### Achado incidental: capa real, 3ª validação bem-sucedida
+
+Confirmado (não só relatado pelo usuário): proporção da página 0
+(0,7727) vs. imagem embutida (0,7624, diferença 1,3%) — dentro da
+tolerância de 15% (`TOLERANCIA_PROPORCAO_CAPA`). Terceira validação
+bem-sucedida da extração de capa da Fase 4.5 (depois de Gil 208pg e
+PEREIRA 903pg), agora também confirmada num livro nativo estrangeiro.
+
+### Resumo — nenhuma correção aplicada, 2 achados acionáveis registrados para o backlog
+
+1. **Legenda/rótulo corrompido promovido a título** (item 2): padrão
+   confirmado em 2 livros. Direção recomendada: suprimir detecção de
+   título em páginas 100%-imagem (native vazio + `get_images()` cobrindo
+   quase toda a área da página).
+2. **Falso positivo real de cabeçalho** (item 4): stopwords em inglês
+   ausentes causam pelo menos 1 caso confirmado de remoção de conteúdo
+   real. Direção recomendada: unir lista de stopwords PT+EN (resolve o
+   Cluster 1, confirmado por simulação); Cluster 2 precisa de uma
+   segunda mudança, ainda não calibrada.
+
+Nenhuma das duas foi implementada nesta rodada — inspeção, não correção,
+conforme escopo definido no meta-prompt desta tarefa.
+

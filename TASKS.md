@@ -1040,3 +1040,102 @@ do `.dmg` novo em `desktop/src-tauri/target/release/bundle/dmg/` e
 testar manualmente uma conversão, observando as 3 barras de progresso
 atualizando durante o processamento.
 
+## Inspeção de qualidade: 1º livro de teste em inglês (2026-09-04)
+
+Ver `ARCHITECTURE.md` para a investigação completa (mecanismo, tabelas
+de evidência, simulações). Aqui, só o resumo acionável — **tarefa de
+inspeção, nenhuma correção de código aplicada**, conforme escopo.
+
+Livro: `Fundamentals of Data Engineering (Third Early Release)`, 210
+páginas, processado com `--lang por` (sem seletor automático — Parte 2
+do backlog de UI/UX ainda não implementada).
+
+- [x] **Item 1 — qualidade de OCR em inglês com `por`.** Achado que
+  muda a premissa da investigação: este PDF é **96,7% texto nativo**
+  (203/210 páginas) — só 7 páginas usam OCR, e as 7 são imagens de
+  página inteira (gráficos/infográficos), não prosa. **Não há amostra
+  de prosa em inglês via OCR disponível neste livro** para comparar
+  contra o baseline em português dos livros de calibração. Implicação
+  real para a Parte 2: para PDFs "born-digital" nativos (early-release,
+  não escaneados), a escolha de idioma do OCR importa pouco na prática
+  — reduz a urgência da detecção automática para ESSA classe de
+  documento (não testa nem resolve o caso de PDF escaneado em inglês,
+  que continua sem exemplo real no projeto).
+
+- [x] **Item 2 — padrão confirmado, 2ª ocorrência: legenda/rótulo de
+  figura corrompido promovido a título de capítulo.** Mesmo padrão do
+  livro do Gil (Fase 3, "COMO DELINEAR UM Ed tita: DE CRIQRLES").
+  Estrutura idêntica confirmada com dado real: página 100% imagem (0
+  texto nativo, 1 imagem cobrindo a página inteira), OCR produz ~24
+  fragmentos majoritariamente ruído de 1-4 caracteres, e o único
+  fragmento comprido o bastante (33 caracteres, a razão de tamanho
+  2,11x contra uma mediana de página já degenerada de 28px) cruza os
+  dois filtros por coincidência. A legenda REAL da figura ("Figure
+  1-10. Data engineering is the fastest-growing tech occupation
+  (2020)") sobrevive intacta, como texto nativo normal, na página
+  SEGUINTE — o que virou título é ruído de dentro do próprio gráfico,
+  não a legenda do livro. Direção recomendada (não implementada):
+  suprimir detecção de título em páginas com native vazio + imagem
+  cobrindo quase toda a página — sinal estrutural, não mais um limiar
+  de altura/razão (que já colidiu com texto real na Fase 4.5).
+
+- [x] **Item 3 — TOC (6 entradas, 210 páginas).** Confirmado: título do
+  livro + 4 capítulos reais (todos com nome perfeito, extraído de texto
+  nativo) + a legenda corrompida do item 2 = 6. Nenhum capítulo real
+  ficou de fora.
+
+- [x] **Item 4 — cabeçalho repetido em inglês: falso positivo REAL
+  confirmado, com conteúdo removido do EPUB** (não apenas perda de
+  recall, como nos casos já documentados em português). Só 2 clusters
+  de ~90 cruzaram o limiar mínimo de 3 — forte evidência de que este
+  livro genuinamente não tem cabeçalho de página repetido (2ª
+  confirmação da explicação (a) já registrada como ambígua para o
+  PEREIRA na Fase 4.3). Os 2 clusters que cruzaram não são cabeçalhos
+  reais:
+  - **Cluster 1**: 3 frases de páginas sem relação (título da capa +
+    1ª frase da introdução) agrupadas só por vocabulário temático
+    compartilhado. Confirmado no `.epub` gerado: a página 7 agora
+    começa com uma frase CORTADA AO MEIO
+    (`"extent, we're focusing on..."` — a sentença completa `"This
+    book provides a snapshot of data engineering today."` sumiu).
+  - **Cluster 2**: 3 legendas de figuras DIFERENTES (Figura 2-1, Figura
+    2-7, e um subtítulo solto) agrupadas pela mesma razão. Confirmado:
+    a legenda real da Figura 2-1 desapareceu por completo do `.epub`
+    (página 53).
+  - **Causa raiz identificada com precisão** (não suposição):
+    `_STOPWORDS_CABECALHO` só tem stopwords em português — palavras
+    funcionais do inglês (`"of"`, `"the"`, `"to"`, `"this"`, `"and"`)
+    nunca são filtradas, inflando a similaridade de contenção entre
+    frases sem relação real. **Confirmado por simulação direta com o
+    código de produção**: removendo manualmente essas palavras do
+    cálculo, o Cluster 1 cai de similaridade 0,75 para 0,667 (abaixo do
+    limiar 0,70 — não teria clusterizado). O Cluster 2 cai de 0,857
+    para 0,80 (continua acima do limiar — precisa de uma segunda
+    correção, vocabulário genuinamente compartilhado entre legendas do
+    mesmo capítulo, não resolvido só com stopwords).
+  - **Direção recomendada, não implementada** (fora de escopo desta
+    tarefa de inspeção): unir a lista de stopwords PT+EN (resolve o
+    Cluster 1, já calibrado/confirmado); para o Cluster 2, considerar
+    exigir pelo menos 1 repetição exata (não só por contenção) antes de
+    promover um cluster — não calibrado, precisa de mais exemplos reais
+    antes de mudar o limiar.
+
+- [x] **Item 5 — formatação de parágrafo (recuo/zigue-zague).** Sem
+  regressão — inspecionadas páginas de prosa em vários pontos do livro,
+  todas com parágrafos coesos, sem zigue-zague. Segunda validação
+  end-to-end real do critério de recuo nativo (`LIMIAR_RECUO_DELTA_PONTOS_NATIVO`,
+  calibrado originalmente só contra o PEREIRA) contra um segundo livro
+  diferente — reduz o risco residual já registrado na Fase 4.4 sem
+  eliminá-lo.
+
+- [x] **Achado incidental: capa real, 3ª validação bem-sucedida**
+  (depois de Gil 208pg e PEREIRA 903pg) — proporção página (0,7727) vs.
+  imagem (0,7624), diferença 1,3%, dentro da tolerância.
+
+**Fechamento**: inspeção completa, nenhuma correção de código aplicada
+(conforme escopo). 2 achados acionáveis registrados para o backlog, com
+causa raiz identificada e (no caso do Cluster 1) uma correção já
+simulada e confirmada, pronta para implementação numa rodada futura
+dedicada — não aplicada agora por decisão explícita de manter esta
+tarefa como inspeção pura.
+
