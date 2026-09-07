@@ -43,6 +43,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -994,6 +995,19 @@ def main() -> None:
     # embutido. Ver ARCHITECTURE.md, Fase 4.6, para os timestamps do teste.
     sys.stdout.reconfigure(line_buffering=True)
 
+    # Cancelamento (botão "Cancelar"/fechar janela no app desktop) chega
+    # como SIGTERM neste processo (ver ARCHITECTURE.md, gerenciamento de
+    # ciclo de vida do sidecar). O handler default do Python para SIGTERM
+    # mata o processo na hora, sem rodar o __exit__ do
+    # tempfile.TemporaryDirectory() abaixo — trocado por um handler que
+    # levanta KeyboardInterrupt, deixando a exceção se propagar através do
+    # `with` (que roda a limpeza durante o unwind) até ser capturada logo
+    # depois, já fora do bloco.
+    def _handler_sigterm(signum, frame):
+        raise KeyboardInterrupt("Cancelado via SIGTERM")
+
+    signal.signal(signal.SIGTERM, _handler_sigterm)
+
     parser = argparse.ArgumentParser(
         description="Foliant: PDF -> OCR -> HTML -> EPUB/AZW3, offline e em streaming"
     )
@@ -1007,14 +1021,23 @@ def main() -> None:
     check_dependencies()
     titulo = args.titulo or args.pdf_entrada.stem
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_dir = Path(tmp)
-        html_path = tmp_dir / "livro.html"
-        cache_path = tmp_dir / "paginas.jsonl"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            html_path = tmp_dir / "livro.html"
+            cache_path = tmp_dir / "paginas.jsonl"
 
-        cabecalhos, capa_path = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
-        construir_html(cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos)
-        convert_to_ebook(html_path, args.saida, titulo=titulo, autor=args.autor, capa_path=capa_path)
+            cabecalhos, capa_path = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
+            construir_html(cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos)
+            convert_to_ebook(html_path, args.saida, titulo=titulo, autor=args.autor, capa_path=capa_path)
+    except KeyboardInterrupt:
+        # Propagada pelo handler de SIGTERM acima (ou por Ctrl+C manual, uso
+        # normal em terminal) — o `with` já rodou __exit__ e removeu o
+        # diretório temporário (cache OCR/HTML) durante o unwind, antes de
+        # chegar aqui. CANCELADO: no stdout permite ao app desktop distinguir
+        # cancelamento de erro genérico.
+        print("\nCANCELADO: conversão interrompida.")
+        sys.exit(130)
 
     print(f"\nConcluído: {args.saida}")
 
