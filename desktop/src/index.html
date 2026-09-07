@@ -21,7 +21,7 @@
         </label>
 
         <label>
-          Salvar EPUB como
+          Salvar EPUB em:
           <div class="row">
             <input id="saida" type="text" readonly placeholder="Selecione onde salvar o .epub" />
             <button type="button" id="btn-selecionar-saida">Selecionar…</button>
@@ -30,21 +30,30 @@
 
         <label>
           Título
-          <input id="titulo" type="text" placeholder="(opcional)" />
+          <input id="titulo" type="text" placeholder="Foliant" />
         </label>
 
         <label>
           Autor
-          <input id="autor" type="text" value="Desconhecido" />
+          <input id="autor" type="text" placeholder="ALMEIDA, Thiago." />
         </label>
 
         <label>
-          Idioma (código Tesseract)
+          Idioma do documento
           <input id="lang" type="text" value="por" />
+          <span class="ajuda">Usado só para reconhecer texto em páginas escaneadas (OCR).</span>
         </label>
 
-        <button id="btn-converter" type="submit">Converter</button>
+        <div class="row">
+          <button id="btn-converter" type="submit">Converter</button>
+          <button id="btn-cancelar" type="button" hidden>Cancelar</button>
+        </div>
       </form>
+
+      <div class="linha-atualizacao">
+        <button id="btn-verificar-atualizacao" type="button" class="link-atualizacao">Verificar atualizações</button>
+        <span id="status-atualizacao" class="status-atualizacao" role="status"></span>
+      </div>
 
       <div id="progresso" class="progresso" hidden>
         <div class="fase" data-fase="ocr">
@@ -73,7 +82,13 @@
         </div>
       </div>
 
-      <pre id="log"></pre>
+      <div id="sucesso" class="sucesso" hidden></div>
+      <div id="aviso" class="aviso" hidden role="alert"></div>
+
+      <details id="log-detalhes">
+        <summary>Ver log detalhado</summary>
+        <pre id="log"></pre>
+      </details>
     </main>
     <script type="module" src="/main.js"></script>
   </body>

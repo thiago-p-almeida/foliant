@@ -25,6 +25,14 @@
   flex-direction: column;
   justify-content: center;
   text-align: center;
+  border: 2px dashed transparent;
+  border-radius: 12px;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+body.arrastando-arquivo .container {
+  border-color: #396cd8;
+  background-color: #396cd80d;
 }
 
 .subtitle {
@@ -50,8 +58,19 @@ form label input {
   font-weight: 400;
 }
 
+form label .ajuda {
+  font-weight: 400;
+  font-size: 0.8em;
+  opacity: 0.6;
+  margin-top: -0.1em;
+}
+
 form .row input {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .progresso {
@@ -129,8 +148,79 @@ form .row input {
   100% { transform: translateX(250%); }
 }
 
-#log {
+.linha-atualizacao {
+  margin-top: 1em;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.link-atualizacao {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+  opacity: 0.7;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.status-atualizacao {
+  font-size: 0.8em;
+  opacity: 0.6;
+  min-height: 1em;
+}
+
+.sucesso {
   margin-top: 1.5em;
+  text-align: left;
+  background: #2e9e4f1a;
+  border: 1px solid #2e9e4f55;
+  border-radius: 8px;
+  padding: 1em;
+  font-size: 0.9em;
+}
+
+.sucesso strong {
+  display: block;
+  margin-bottom: 0.3em;
+}
+
+.sucesso code {
+  word-break: break-all;
+}
+
+.acoes-sucesso {
+  display: flex;
+  gap: 0.6em;
+  margin-top: 0.8em;
+}
+
+.aviso {
+  margin-top: 1.5em;
+  text-align: left;
+  background: #c9740014;
+  border: 1px solid #c9740055;
+  border-radius: 8px;
+  padding: 1em;
+  font-size: 0.9em;
+}
+
+#log-detalhes {
+  margin-top: 1.5em;
+  text-align: left;
+}
+
+#log-detalhes summary {
+  cursor: pointer;
+  font-size: 0.85em;
+  opacity: 0.7;
+  user-select: none;
+}
+
+#log {
+  margin-top: 0.8em;
   text-align: left;
   background: #00000010;
   border-radius: 8px;
@@ -156,6 +246,11 @@ form .row input {
 .row {
   display: flex;
   justify-content: center;
+  gap: 0.6em;
+}
+
+.row button {
+  flex-shrink: 0;
 }
 
 a {
