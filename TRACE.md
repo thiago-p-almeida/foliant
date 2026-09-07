@@ -630,3 +630,222 @@ objetivo real.
    mantida não porque o efeito colateral foi ignorado, mas porque seu
    alcance real foi medido, e o resultado dessa medição — não a
    ausência de investigação — é o que embasa a decisão.
+
+---
+
+# Quinto episódio — Fases 4.10 a 4.12: quando o próprio método de
+# validação tem um ponto cego estrutural
+
+## Por que este episódio é diferente de todos os anteriores
+
+Os quatro episódios anteriores são sobre hipóteses de calibração de
+texto/heurística (recuo, logo, stopwords, título) — em todos, o erro
+era sobre **onde ou como** um critério se aplicava, descoberto rodando
+o pipeline de produção contra dado real. Este episódio é o primeiro
+inteiramente sobre **infraestrutura de teste e deploy** do app desktop:
+a lição não é "o critério não generalizou", é "o método usado para
+validar as mudanças — necessário porque este ambiente sandboxed não tem
+acesso de Accessibility para clicar de verdade na janela nativa — tem
+um ponto cego estrutural para duas categorias inteiras de bug". E essa
+lição não apareceu uma vez: apareceu duas, em sequência, na mesma
+sessão de trabalho.
+
+Uma correção de registro antes de contar a história: uma versão inicial
+da documentação da Fase 4.10 (em `ARCHITECTURE.md`/`TASKS.md`) descreveu
+o incidente abaixo como "a segunda ocorrência" de um padrão já visto na
+Fase 4.4 ("zigue-zague"). Isso estava **errado** — conferido agora
+contra o conteúdo real da Fase 4.4, ela é uma correção pura de
+heurística de texto em `foliant.py`, sem nenhum componente de app
+desktop ou de deploy. Essa referência cruzada foi removida dos dois
+documentos ao escrever este episódio. O episódio real não perde força
+por isso — é a **primeira** ocorrência documentada deste padrão
+específico, não a segunda, e mesmo assim se repete de novo, com uma
+causa raiz diferente, poucas fases depois.
+
+---
+
+## Parte A — o incidente de deploy (Fase 4.10)
+
+### O que aconteceu
+
+A Fase 4.8 corrigiu dois bugs visuais do app desktop (rótulo de fase
+travado, painel de log sem colapsar) e validou a correção via um
+harness headless (Chrome + Playwright servindo `desktop/src/` real, com
+os módulos do plugin Tauri substituídos por stubs — necessário porque
+este ambiente não tem acesso de Accessibility para automatizar cliques
+na janela nativa). Duas fases depois (Fase 4.9), múltiplos builds reais
+do app foram gerados e testados de ponta a ponta para validar o
+mecanismo de updater automático. O usuário então rodou o `Foliant.app`
+já instalado até o fim, num livro de 903 páginas, e os **mesmos dois
+bugs da Fase 4.8 reapareceram**.
+
+### A causa raiz, com evidência, não suposição
+
+> "`desktop/src/main.js` e `index.html` no repositório **já continham**
+> as duas correções da Fase 4.8 [...] — confirmado por grep antes de
+> qualquer outra hipótese."
+
+O código-fonte estava certo. O problema era mais simples e mais fácil
+de não notar:
+
+> "`/Applications/Foliant.app/Contents/MacOS/foliant-desktop` tinha
+> timestamp de **2026-09-04 20:00:31** — anterior a `desktop/dist/`
+> (2026-09-04 22:03:59, gerado durante os builds reais da Fase 4.9, já
+> contendo as correções da Fase 4.8) [...] Ou seja: os múltiplos builds
+> reais feitos durante a validação da Fase 4.9 [...] foram todos
+> copiados para diretórios de scratchpad para teste — **nenhum foi
+> copiado para `/Applications`**. O app instalado na máquina do usuário
+> nunca foi trocado desde antes da Fase 4.8 existir."
+
+Antes de aceitar essa hipótese, duas alternativas óbvias foram
+descartadas com evidência, não por eliminação de conveniência: duplicata
+de instalação (`mdfind`/`find` só encontraram um `Foliant.app` real — o
+caminho espelhado em `/System/Volumes/Data/Applications/` é o mesmo
+arquivo via firmlink do APFS, mesmo inode confirmado por `stat -f "%d
+%i"`) e regressão de código (descartada pelo grep inicial). Restou só a
+explicação real: um build correto, já validado, que nunca chegou ao
+lugar onde o usuário o executa.
+
+### A mudança de processo — adotada depois do fato, não antes
+
+> "toda tarefa futura que altere `desktop/src/*` e for validada só via
+> harness headless [...] deve terminar com um checklist explícito antes
+> de pedir validação visual ao usuário: (a) o `dist/` mais recente
+> contém as strings da mudança? (b) o `/Applications/Foliant.app`
+> instalado tem timestamp **posterior** ao commit/mudança mais recente
+> em `desktop/src/`? Se a resposta a (b) for não, o app precisa ser
+> reconstruído e reinstalado antes de qualquer pedido de validação ao
+> usuário — não depois."
+
+Vale registrar sem suavizar: essa checagem não existia antes de este
+incidente acontecer. Não foi uma precaução prevista — foi uma reação a
+um erro real já cometido. A Fase 4.11, que vem a seguir, mostra essa
+mesma disciplina de "verificar timestamp antes de pedir validação"
+sendo aplicada de verdade, pela primeira vez, exatamente como prometido.
+
+---
+
+## Parte B — os dois bugs que só o teste manual real encontrou (Fases 4.11-4.12)
+
+### Sucesso aparente completo
+
+A Fase 4.11 implementou cinco itens de polimento de UI (correção de
+sobreposição de layout, feedback do botão "Verificar atualizações",
+botões de ação pós-conversão via plugin `opener`, drag-and-drop de PDF,
+rótulo mais claro do campo de idioma). Desta vez, a lição da Fase 4.10
+foi aplicada à risca: `dist/` verificado por grep antes de instalar,
+timestamp do `.app` confirmado posterior a todas as mudanças, smoke
+test real de conversão rodado no binário recém-instalado. A suite de
+testes headless (que já cobria a Fase 4.8/4.9 como regressão) fechou em
+**20 de 20 asserções novas passando**, mais as 18 de regressão das fases
+anteriores.
+
+Por todos os critérios que o método de validação deste projeto conseguia
+medir, a fase estava pronta.
+
+### O que a validação manual real encontrou
+
+A validação manual do usuário — não o harness, que não existe caminho
+para automatizar neste ambiente sandboxed — encontrou dois bugs reais
+que os 20 checks headless simplesmente não podiam capturar, por
+natureza:
+
+> "1. `'Abrir EPUB'` falhava com `Not allowed to open path`. 'Ver na
+> Pasta' funcionava com o mesmo arquivo.
+> 2. Drag-and-drop de arquivo não-PDF era rejeitado corretamente, mas
+> sem nenhum aviso fora do log colapsado."
+
+O primeiro é uma permissão real do sistema operacional, mediada pelo
+runtime nativo do Tauri — um stub de `openPath()`/`revealItemInDir()`
+no harness headless sempre "funciona", porque é só uma função JS vazia
+que grava num objeto global; ele não pode reproduzir uma checagem de
+escopo que só existe no binário Rust compilado. O segundo não é bem uma
+lacuna do harness (o teste headless *tinha* confirmado a rejeição, só
+não tinha verificado se havia feedback visível fora do log) — mas
+reforça o mesmo ponto: 20/20 verde não significa "sem bugs", significa
+"sem bugs nas dimensões que os asserts cobriam".
+
+### A causa raiz real do bug de permissão (lida no código-fonte do plugin, não suposta)
+
+> "lido `tauri-plugin-opener-2.5.5/src/commands.rs` — o comando IPC
+> `open_path` (usado por `openPath()` da JS) recebe `command_scope` e
+> `global_scope` e chama `scope.is_path_allowed(...)` antes de executar
+> [...] sem nenhuma entrada de escopo [...] a lista fica vazia e
+> **tudo** é negado. Já `reveal_item_in_dir` (usado por 'Ver na
+> Pasta') **não recebe parâmetro de escopo nenhum** na assinatura do
+> comando — não há checagem de escopo nessa API do plugin [...] Essa
+> assimetria entre os dois comandos do mesmo plugin era a causa real —
+> não falta de permissão 'geral' do opener."
+
+A investigação não parou na causa raiz — foi atrás do padrão
+recomendado para o cenário real (caminho de destino escolhido livremente
+pelo usuário em tempo de execução, não fixo em tempo de build), e
+confirmou, lendo o código-fonte, que a extensão automática de escopo do
+diálogo de salvar cobre só o `fs`/asset protocol, nunca o escopo próprio
+do `opener` — e que o `opener` não expõe API Rust nenhuma para estender
+esse escopo em runtime, ao contrário do `fs`.
+
+### A correção: tornar o acesso mais restrito, não mais amplo
+
+O caminho fácil aqui seria alargar a permissão declarada — um glob
+estático como `"**"` resolveria o erro imediatamente. Foi
+deliberadamente rejeitado por contrariar o princípio de permissão
+mínima já seguido no resto do projeto (`shell:allow-spawn`, por
+exemplo, é escopado a um binário e argumentos específicos, não a
+"qualquer comando"). A correção real foi na direção oposta:
+
+> "dois comandos novos em `lib.rs` — `registrar_epub_gerado(caminho)`
+> [...] e `abrir_epub_gerado()` (sem receber caminho nenhum da JS — lê
+> o estado registrado e chama `app.opener().open_path(...)` direto)
+> [...] Resultado: **escopo real mínimo** — só é possível abrir
+> exatamente o arquivo que o próprio backend acabou de gerar nesta
+> sessão, verificado no lado Rust [...] mais restrito do que qualquer
+> glob estático teria sido, e sem precisar de nenhuma entrada de
+> permissão nova."
+
+O comando customizado contorna a checagem de escopo do plugin chamando
+a API interna do `Opener` diretamente (a checagem só existe no wrapper
+`#[tauri::command]` exposto para IPC, não na struct `Opener` em si) —
+mas em vez de usar esse atalho para abrir qualquer caminho, ele só abre
+o único caminho que o próprio app gerou, rastreado em estado Rust. A
+permissão `opener:allow-open-path`, que não resolvia o problema mesmo
+alargada (sem entradas de escopo, qualquer glob declarado exigiria de
+qualquer forma uma entrada de `"allow"` explícita), foi removida por não
+ser mais necessária.
+
+---
+
+## O padrão, resumido
+
+1. Um harness automatizado headless, por mais completo que seus próprios
+   checks pareçam (20/20, neste caso), tem um ponto cego **estrutural**
+   para duas categorias de bug que não existem no ambiente onde ele
+   roda: permissões reais do sistema operacional mediadas pelo runtime
+   nativo, e estado de processo/binário já em execução ou já instalado
+   em disco. Nenhum stub, por mais fiel que pareça, reproduz essas duas
+   coisas — porque a fidelidade do stub é justamente o que as remove da
+   equação.
+2. Isso não é motivo para abandonar o harness — ele seguiu pegando
+   regressão de tudo que já cobria, nas três fases deste episódio, sem
+   nenhuma falha. É motivo para nunca tratar "passou no harness" como
+   sinônimo de "validado", em especial para qualquer mudança que toque
+   permissão de arquivo/SO ou ciclo de vida de processo/deploy.
+3. O mesmo tipo de lacuna (build correto que não chega ao lugar certo,
+   teste que não cobre a dimensão real do bug) gerou uma mudança de
+   processo concreta só depois de acontecer — não antes. Registrar isso
+   sem suavizar é mais valioso para o histórico do projeto do que
+   apresentar a lição como se tivesse sido prevista desde o início.
+4. A mesma lacuna se confirmou de novo, com uma causa raiz totalmente
+   diferente, poucas fases depois — o que transforma isto de "um erro
+   pontual" em "um padrão de risco da própria metodologia de trabalho
+   deste projeto", que deve ser assumido como esperado, não como
+   exceção, em toda tarefa futura de frontend/desktop.
+5. A correção da referência à Fase 4.4 (acima) é, ela mesma, uma
+   instância do mesmo princípio — só que na direção oposta. A afirmação
+   errada não nasceu de uma investigação solitária: veio **repassada
+   como fato já estabelecido** na própria instrução que pediu este
+   episódio, que por sua vez a tinha herdado de uma sessão anterior. Só
+   foi corrigida porque o mesmo hábito de "checar a fonte antes de
+   aceitar" foi aplicado à instrução recebida, não só ao código sendo
+   escrito. "Verificar antes de aceitar" vale nas duas direções do
+   fluxo de trabalho — não é responsabilidade de um único papel.

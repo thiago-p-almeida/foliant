@@ -1250,3 +1250,618 @@ implementada encontrado e documentado, não escondido. Duas reversões de
 hipótese num único episódio de trabalho — candidatas a registro em
 `TRACE.md`, levadas para confirmação do usuário antes de editar esse
 arquivo, conforme pedido.
+
+## Fase 4.7: encerramento robusto do sidecar ao fechar o app / botão de cancelar (2026-09-04)
+
+Item de infraestrutura de processo (Tauri/Rust), desacoplado das 4
+rodadas anteriores de calibração de OCR/texto — sem tocar nenhuma
+heurística já validada.
+
+**Causa raiz confirmada com teste real** (não assumida): isolado o
+binário PyInstaller `foliant-core` fora do Tauri, `ps -o pid,ppid,command`
+revelou 3 níveis de processo (stub do bootloader `--onefile` → processo
+Python real forkado por ele → `tesseract`, subprocess do `pytesseract`).
+Lendo o código-fonte de `tauri-plugin-shell 2.3.6` (versão exata pinada
+em `Cargo.lock`), `CommandChild::kill()` manda `SIGKILL` só no pid do
+`Child` que ele guarda — isto é, só o stub (nível 1). O processo Python
+real e o `tesseract` nunca recebiam sinal nenhum, ficavam órfãos
+(reparented pro `launchd`), e continuavam rodando — exatamente o sintoma
+relatado (`foliant-core` vivo minutos depois do app fechado). Ver
+`ARCHITECTURE.md`, Fase 4.7, para a árvore de processos completa e a
+citação do código-fonte do plugin.
+
+**Mecanismo escolhido**: rastreamento de árvore de PIDs via `ps`/`kill`
+(BFS a partir do pid do stub, achando todos os descendentes em qualquer
+profundidade), não grupo de processos — porque o sidecar herda o mesmo
+grupo do próprio app Tauri (sem `setsid`), e um `killpg` mataria o app
+junto. `SIGTERM` em toda a árvore primeiro, espera 1,5s, `SIGKILL` em
+quem sobreviver. Nenhuma dependência nova no `Cargo.toml` — `ps`/`kill`
+já eram a ferramenta usada em toda a validação manual deste projeto,
+só automatizada.
+
+**`foliant.py`**: handler de `SIGTERM` que levanta `KeyboardInterrupt`,
+deixando a exceção se propagar através do `with
+tempfile.TemporaryDirectory()` (que roda a limpeza durante o unwind)
+antes de ser capturada e imprimir `CANCELADO: conversão interrompida.`
+— sem isso, o handler default do Python mataria o processo sem limpar o
+cache OCR/HTML intermediário. **Testado isoladamente com dado real**:
+SIGTERM mandado direto pro pid do processo Python real com uma página de
+OCR em andamento — morre e limpa em **~600ms** (medido por polling a
+cada 300ms), bem dentro da margem de 1,5s escolhida para o `SIGKILL` de
+segurança do lado Rust.
+
+**Validação end-to-end — dado real, `.app` de produção, livro de 208
+páginas** (`samples/livro_completo_208pg.pdf`), via clique real na UI
+(automação de acessibilidade `osascript`/System Events, estável desta
+vez contra o binário sem assinatura — diferente do artefato de TCC que
+bloqueou a mesma técnica nas Fases 4.1/4.2):
+
+| Cenário | `ps aux` (`foliant-core`+`tesseract`) | `.epub` parcial | Mensagem na UI |
+|---|---|---|---|
+| Botão "Cancelar" durante OCR | zero processos (checado a cada 500ms até 3s) | nenhum | "Cancelando…" → "CANCELADO: conversão interrompida." → "Cancelado pelo usuário." |
+| Fechar a janela durante OCR | zero processos, incluindo o próprio app | nenhum | app encerrado |
+
+**Não-regressão confirmada com dado real**: mesmo `.app`, conversão
+completa do livro de 80 páginas sem cancelamento, do início ao fim, via
+clique real na UI — `.epub` de 810KB gerado, UI mostra "Processo
+concluído com sucesso." (distinto de "Cancelado", confirmando que o novo
+rastreamento de pid não interfere no fluxo normal).
+
+**Risco residual aceito, documentado, não corrigido nesta fase**: se o
+processo Python real não reagir ao `SIGTERM` dentro dos 1,5s de margem
+(não observado nos testes reais desta fase), o stub do bootloader
+PyInstaller pode ser morto por `SIGKILL` antes de limpar seu próprio
+diretório de extração `_MEI*` — deixando esse diretório órfão (limitação
+do bootloader compilado do PyInstaller, fora do controle deste código;
+não afeta o objetivo principal, que é `foliant-core`/`tesseract` zerados
+em `ps aux`, cumprido nos dois cenários testados). **Perguntado
+explicitamente se isso pode acumular**: confirmado que sim, sem limite —
+é limitação conhecida do PyInstaller (issues #902/#2379/#5518, nunca
+corrigidas, sem limpeza de sobras de execuções anteriores no próximo
+start) e verificado nesta máquina que a limpeza diária do macOS
+(`periodic`) só cobre `/tmp`, não a pasta real usada
+(`tempfile.gettempdir()` → `/var/folders/.../T`) — arquivos de mais de um
+mês atrás confirmados ainda presentes lá. Nota visível adicionada ao
+`README.md` ("Limitações conhecidas") para o usuário final, já que o
+sintoma (disco cheio meses depois) não teria relação óbvia com a causa.
+Ver `ARCHITECTURE.md`, Fase 4.7, para o detalhe completo e as fontes.
+
+**Fora de escopo, não tocado**: heurísticas de OCR/texto (Cluster 2,
+lista numerada, detecção de idioma) e barra de progresso/detecção de
+idioma da Fase 4.6 Parte 2 — seguem no backlog.
+
+## Fase 4.8: correção do rótulo travado da fase HTML + limpeza do painel ao concluir (2026-09-04)
+
+Só frontend (`desktop/src/main.js`, `index.html`, `styles.css`).
+`foliant.py` não tocado.
+
+**Bug 1 — rótulo "processando…" travado na fase "Montagem do HTML"**:
+causa raiz identificada em `atualizarProgresso()`
+([main.js:47-55](desktop/src/main.js#L47-L55) antes da correção) — o
+laço que marca fases anteriores como `concluida` (disparado quando a
+fase seguinte começa) atualizava a barra para 100% e a classe CSS, mas
+nunca o texto do contador. Fases com contador granular (`ocr`, `epub`)
+não sofriam disso porque elas mesmas já escrevem seu texto final
+("210/210", "100%") antes de a próxima fase começar; só "html" — que
+nunca emite um evento de conclusão próprio (ver
+[foliant.py:883](foliant.py#L883), único `PROGRESS` da fase, sempre
+`atual:0,total:0`) — dependia inteiramente desse laço, e ficava com o
+texto "processando…" gravado por último. **Correção**: no mesmo laço,
+se o texto atual do contador for exatamente "processando…", substituído
+por "concluído"; contadores com valor final (que não é "processando…")
+não são tocados.
+
+**Melhoria 2 — colapsar o log ao concluir com sucesso**: pedido do
+usuário para não poluir a tela no caminho feliz, mantendo o log
+acessível para depuração. **Decisão de UX**: usado `<details>`/`<summary>`
+nativo do HTML (`#log-detalhes`) em vez de escondê-lo de vez — nenhum JS
+extra necessário para o toggle, e o log nunca é destruído/removido do
+DOM. Reaproveitado o mesmo evento que a UI já tinha para detectar
+conclusão (`command.on("close", ...)`, ver
+[main.js:146](desktop/src/main.js#L146) antes da correção) — nenhum
+mecanismo novo de detecção. Regra: `details.open = false` (recolhe) só
+no ramo de sucesso (`dados.code === 0` e não cancelado); nos ramos de
+erro e de cancelamento, o log permanece aberto, porque nesses casos ele
+é informação primária, não secundária. Um banner verde (`#sucesso`)
+aparece no lugar mostrando o caminho salvo (lido direto do campo "Salvar
+EPUB como" já presente na UI, sem novo estado). Nova conversão
+(`submit` do formulário) reabre o log e esconde o banner
+incondicionalmente, evitando que a UI fique presa no estado "concluído"
+da execução anterior.
+
+**Atalho para abrir a pasta de destino no Finder — avaliado e descartado
+nesta fase**: `tauri-plugin-opener` já está registrado no lado Rust
+(`Cargo.toml` + `lib.rs` + capability `opener:default`), mas o binding
+JS (`@tauri-apps/plugin-opener`) não está instalado em
+`desktop/package.json` — adicionar essa dependência (mudança de build,
+não só de UI) ficou fora do escopo contido desta fase. Registrado como
+possível melhoria futura, não implementada.
+
+**Validação — dado real, não suposição**: ambiente sandboxed sem acesso
+de Accessibility/tela (mesma limitação já documentada na Fase 4.1/4.2
+para automação via `osascript`), então a validação visual não foi feita
+contra a janela nativa do `.app`. Em vez disso, `desktop/src/main.js` e
+`index.html` **reais** (sem cópia nem reimplementação) foram servidos
+por um HTTP server local e carregados no Chrome instalado na máquina via
+Playwright headless, com um import map trocando só os três módulos do
+Tauri (`@tauri-apps/plugin-shell`, `@tauri-apps/plugin-dialog`,
+`@tauri-apps/api/core`) por stubs que permitem injetar as mesmas linhas
+`PROGRESS:` que `foliant.py` realmente emite
+([foliant.py:809,836,883,963,976,980](foliant.py#L809)) e simular
+`close`/`cancelar`. Cenários confirmados com screenshot + asserção de
+DOM:
+- Fase "Montagem do HTML" mostra `.fase-contador` = "processando…"
+  enquanto ativa, e `"concluído"` (com classe `.concluida`/check verde)
+  assim que a fase "epub" começa — bug original reproduzido antes da
+  correção e confirmado corrigido depois.
+- Conclusão com sucesso: `#log-detalhes.open === false` e banner
+  `#sucesso` visível com o caminho exato de "Salvar EPUB em".
+- Cancelamento (`cancelar_conversao` mockado): log permanece
+  `open === true`, banner de sucesso não aparece.
+- Erro real (`close` com código 1, sem cancelamento): log permanece
+  `open === true`, banner de sucesso não aparece.
+- Segunda conversão iniciada logo em seguida (mesmo processo/sessão):
+  log volta a `open === true` e banner volta a `hidden` antes de
+  qualquer nova linha de progresso chegar.
+
+**Risco residual**: o cenário acima cobre a lógica real de
+`atualizarProgresso`/`processarLinha`/handlers de `close` byte a byte,
+mas não passa pelo runtime real do Tauri (IPC nativo, timing real do
+sidecar) nem pela renderização da janela nativa do WebView do macOS —
+teste manual rápido do usuário (rodar uma conversão real pelo `.app`)
+recomendado para fechar o critério de aceite com 100% de confiança,
+mesmo sem indício de que o runtime real se comporte diferente aqui (a
+lógica testada é puramente DOM/JS, sem dependência de API nativa do
+Tauri além das três importadas e já mockadas).
+
+## Fase 4.9: updater automático (tauri-plugin-updater) (2026-09-04)
+
+Detalhe completo do mecanismo e das duas correções de premissa
+(GitHub Releases é canal novo, não reaproveitado; assinatura ad-hoc
+avaliada e descartada para o aviso do Gatekeeper) em `ARCHITECTURE.md`.
+Aqui, a evidência real de validação — 100% local, nenhum Release
+publicado de verdade.
+
+**Ambiente**: mesma limitação de Accessibility documentada nas Fases
+4.1/4.2/4.8 (automação de clique em app não assinado é morta pelo
+`tccd`). Contornada aqui porque a checagem de update roda automaticamente
+ao abrir o app, sem exigir nenhum clique — bastou lançar o binário e
+observar `Info.plist`/pid/`ps aux`.
+
+**Build e assinatura**: par de chaves gerado com `tauri signer generate`
+em `~/.tauri/foliant-updater.key` (fora do repo, senha aleatória gerada
+com `openssl rand -base64 32`, nunca persistida em nenhum arquivo do
+projeto). Versão real do projeto atualizada para `0.2.0` (primeira com
+updater embutido) em `Cargo.toml`, `tauri.conf.json` e `package.json`.
+
+**Achado durante a implementação, não previsto na investigação inicial**:
+`tauri-plugin-updater` rejeita endpoints não-HTTPS na própria
+deserialização da config (`validate_endpoints` em `config.rs`), até em
+build local — precisou da flag `dangerousInsecureTransportProtocol:
+true`, aplicada **só** via `tauri build --config` nos builds de teste
+(nunca no `tauri.conf.json` commitado, que usa o endpoint HTTPS real do
+GitHub Releases).
+
+**Teste end-to-end 1 — atualização válida detectada, baixada, instalada
+e relançada** (dado real, binário de produção, não script de pesquisa):
+
+1. Build real assinado da v0.2.0 (`--config` só trocando o endpoint para
+   `http://localhost:8791/latest.json`), copiado para fora do projeto e
+   executado dali — nunca sobrescreveu o `Foliant.app` real do usuário em
+   `/Applications`.
+2. Build throwaway da v0.2.1 (mesma técnica, `createUpdaterArtifacts`
+   gerando `Foliant.app.tar.gz` + `.sig` reais).
+3. `latest.json` real (schema oficial: `version`, `notes`, `pub_date`,
+   `platforms."darwin-x86_64".{url,signature}`) servido por
+   `python3 -m http.server` local junto do `.tar.gz`.
+4. Lançado o binário da v0.2.0 diretamente (`Contents/MacOS/foliant-desktop`).
+   Confirmado por log do servidor HTTP que o app buscou `GET
+   /latest.json` e `GET /Foliant.app.tar.gz` sozinho, sem clique nenhum.
+5. **Resultado real, checado em disco/processo, não assumido**: pid do
+   processo mudou de `56865` para `57288` (relançamento de fato
+   ocorreu) e `plutil -p Info.plist` no mesmo caminho passou a reportar
+   `CFBundleShortVersionString: 0.2.1` — prova de
+   check→download→verificação de assinatura→instalação→relançamento
+   ponta a ponta, sem nenhuma automação de UI.
+
+**Teste end-to-end 2 — assinatura inválida rejeitada, não instalada em
+silêncio**:
+
+`latest.json` alterado para anunciar uma versão fictícia mais nova
+(`0.2.2`) com o campo `signature` corrompido de propósito (bytes
+trocados por um preenchimento inválido). App real (agora na v0.2.1)
+relançado contra esse manifesto forjado: log do servidor confirma que
+`GET /latest.json` e `GET /Foliant.app.tar.gz` foram buscados (o plugin
+baixa antes de verificar), mas **o pid do processo não mudou** e
+`Info.plist` continuou reportando `0.2.1` — a atualização foi
+rejeitada e não instalada, confirmando que a verificação de assinatura
+é real, não decorativa. (Não foi possível capturar o texto exato do
+erro no console nativo — console da WebView não é redirecionado para o
+stdout do processo neste build; a prova de rejeição usada foi o estado
+inalterado do binário em disco, evidência igualmente objetiva.)
+
+**Teste 3 — conversão em andamento não é interrompida por uma
+atualização detectada durante o processamento** (Ressalva 1 da
+aprovação do plano): validado via a mesma técnica de Chrome headless +
+Playwright com módulos Tauri mockados já usada e documentada na Fase
+4.8 — aqui reaproveitada especificamente para a lógica de orquestração
+JS (`conversaoEmAndamento`/`atualizacaoPendente` em `main.js`), já que a
+mecânica real de assinatura/instalação foi coberta pelos testes 1 e 2
+acima contra o binário de verdade. Cenário: conversão mock iniciada,
+atualização "disponível" armada e botão "Verificar atualizações"
+clicado durante a conversão — `downloadAndInstall()` não é chamado
+enquanto a conversão está ativa (log confirma "será instalada ao final
+da conversão"); ao emitir o evento de conclusão da conversão (`close`,
+código 0), a atualização pendente é aplicada automaticamente e
+`relaunch()` é chamado. Como o código nunca toca o processo do sidecar
+nesse caminho (só adia a chamada ao updater), não há risco de
+processos órfãos — a garantia de encerramento limpo da Fase 4.7
+permanece intacta porque este código simplesmente não a exercita.
+
+**Teste 4 — quarentena do Gatekeeper após update automático** (Ressalva
+2 da aprovação do plano, resultado real, não suposição de mercado):
+depois do update real do Teste 1, `xattr -r` no `.app` resultante e no
+binário `foliant-core` embutido não retornou **nenhum** atributo
+estendido — sem `com.apple.quarantine`. Consistente com o mecanismo
+real do macOS (quarentena é aplicada por apps "quarantine-aware" como
+Safari/Finder no momento do download pelo usuário, não pelo kernel a
+qualquer tráfego de rede) — um downloader interno via `reqwest` não
+aciona esse atributo. **Conclusão registrada como fato observado, não
+extrapolação**: atualizações futuras aplicadas pelo próprio updater não
+devem reacender o aviso do Gatekeeper.
+
+**Teste 5 — smoke test pós-update**: com o `.app` já trocado pelo
+updater no Teste 1 (conteúdo genuíno extraído do `.tar.gz` baixado, não
+copiado manualmente), rodada uma conversão real completa do
+`samples/001-080.pdf` invocando o binário do sidecar embutido
+diretamente (mesma técnica de invocação direta usada desde a Fase 4
+para contornar a limitação de Accessibility). Resultado: EPUB de 810KB
+gerado com sucesso, TOC com 8 entradas detectado, sem nenhum erro —
+confirma que o app segue funcional depois de ser trocado pelo
+mecanismo de auto-update.
+
+**Risco residual aceito, documentado**: nenhum teste passou pelo clique
+real no botão "Verificar atualizações" da UI nem confirmou visualmente
+a janela (mesma limitação de Accessibility já aceita nas Fases
+4.1/4.2/4.8) — a checagem automática ao abrir cobriu o caminho principal
+sem precisar de clique, e a lógica do botão manual é idêntica à função
+`verificarAtualizacao()` já validada (só troca o gatilho de "carregar a
+página" para "clique"), então o risco remanescente é considerado baixo.
+Recomendado um teste manual rápido do usuário (clicar o botão de verdade
+uma vez) para fechar 100% do critério de aceite.
+
+**Fora de escopo, não tocado**: automação GitHub Actions para assinar
+builds a cada tag; publicação de um Release real no GitHub; qualquer
+mudança em `foliant.py` ou heurísticas de OCR/texto.
+
+## Fase 4.10: incidente — app instalado nunca recebeu a Fase 4.8 (2026-09-05)
+
+**Sintoma reportado pelo usuário**: rodando o `Foliant.app` instalado até
+o fim com sucesso (livro PEREIRA, 903 páginas), os dois bugs que a Fase
+4.8 deveria ter corrigido reapareceram — rótulo "Montagem do HTML"
+travado em "processando…" e painel de log sem colapsar/banner de
+sucesso ao concluir.
+
+**Causa raiz confirmada com evidência, não suposição**:
+
+1. `desktop/src/main.js` e `index.html` no repositório **já continham**
+   as duas correções da Fase 4.8 (`logDetalhesEl`/`sucessoEl`, texto
+   `"concluído"` condicional) — confirmado por grep antes de qualquer
+   outra hipótese.
+2. `git log -1 -- desktop/src/main.js desktop/src/index.html` apontou
+   para o commit da **Fase 4.6** (`eb5ec2f`, 2026-09-04 19:26) — as
+   correções da Fase 4.8/4.9 nunca foram commitadas (ninguém pediu, e a
+   política do projeto é só commitar sob pedido explícito), ficaram
+   como mudanças não commitadas na árvore de trabalho.
+3. `/Applications/Foliant.app/Contents/MacOS/foliant-desktop` tinha
+   timestamp de **2026-09-04 20:00:31** — anterior a `desktop/dist/`
+   (2026-09-04 22:03:59, gerado durante os builds reais da Fase 4.9, já
+   contendo as correções da Fase 4.8: confirmado por
+   `grep -c "sucesso\|<details"` e `grep -c "logDetalhesEl\|sucessoEl"`
+   no `dist/` gerado). Ou seja: os múltiplos builds reais feitos durante
+   a validação da Fase 4.9 (que já incluíam a Fase 4.8, testados e
+   confirmados funcionando via harness headless) foram todos copiados
+   para diretórios de scratchpad para teste — **nenhum foi copiado para
+   `/Applications`**. O app instalado na máquina do usuário nunca foi
+   trocado desde antes da Fase 4.8 existir.
+4. **Sem duplicidade de instalação**: `mdfind`/`find` encontraram só
+   `/Applications/Foliant.app` (o caminho espelhado em
+   `/System/Volumes/Data/Applications/` é o mesmo arquivo via firmlink
+   do APFS, mesmo inode confirmado com `stat -f "%d %i"` — não é uma
+   segunda cópia real).
+
+**Não é regressão de código** — é falha do ciclo de deploy manual: o
+código correto existia, foi validado (headless na Fase 4.8, binário real
+na Fase 4.9), mas nunca chegou ao `.app` que o usuário efetivamente
+abre.
+
+**Item investigado explicitamente — alcance do updater automático sobre
+mudanças de frontend**: `createUpdaterArtifacts: true` empacota o
+`.app.tar.gz` com o bundle **inteiro**, incluindo o binário
+`foliant-desktop` que já tem os assets de frontend (`dist/`) embutidos
+em tempo de build pelo próprio Tauri — não é algo carregado à parte em
+runtime. Ou seja, tecnicamente, se um Release real já tivesse sido
+publicado no GitHub, o updater **teria** coberto essa mudança visual
+também (ele substitui o app inteiro, não só o "sidecar"). Mas isso é
+irrelevante neste incidente específico: **nenhum Release foi publicado
+ainda** (confirmado no fechamento da própria Fase 4.9), então o updater
+automático não tinha absolutamente nenhum efeito prático nesta máquina —
+toda atualização, visual ou de backend, continuava dependendo 100% do
+ciclo de rebuild manual completo, exatamente como documentado desde a
+Fase 4.3. Isso não muda até o primeiro Release ser publicado de verdade.
+
+**Correção aplicada**:
+1. Build de produção limpo, sem nenhum `--config` de teste (diferente
+   dos builds da Fase 4.9, que usavam endpoint local +
+   `dangerousInsecureTransportProtocol` só para validação) —
+   `tauri.conf.json` como está commitado na árvore de trabalho, endpoint
+   HTTPS real do GitHub Releases, versão `0.2.0`.
+2. **Verificado antes de instalar** (mesmo passo intermediário já usado
+   com sucesso na Fase 4.4): `dist/index.html` recém-gerado contém as
+   strings da Fase 4.8; bundle final em
+   `target/release/bundle/macos/Foliant.app` confere versão `0.2.0`.
+3. `/Applications/Foliant.app` antigo removido (`rm -rf`, não
+   sobrescrito) e o novo copiado no lugar, com autorização explícita do
+   usuário antes de qualquer ação destrutiva em `/Applications`.
+4. Revalidado com o mesmo harness headless da Fase 4.8/4.9 (Chrome +
+   Playwright servindo o `desktop/src/` real, módulos Tauri mockados)
+   contra o código-fonte atual: todas as 13 asserções da Fase 4.8
+   (rótulo final da fase HTML, colapso do log, banner de sucesso,
+   comportamento de erro/cancelamento, reset em nova conversão)
+   passaram de novo, confirmando que a lógica em si nunca teve
+   regressão — só o binário instalado estava desatualizado.
+5. Smoke test real no `.app` recém-instalado: conversão completa do
+   `samples/001-080.pdf` via `/Applications/Foliant.app/Contents/MacOS/foliant-core`
+   invocado diretamente (mesma técnica usada desde a Fase 4 para
+   contornar a limitação de Accessibility deste ambiente sandboxed) —
+   EPUB de 810.427 bytes gerado com sucesso (TOC com 8 entradas
+   detectado, sem erros), confirmando que o `.app` recém-instalado
+   segue funcional depois da troca.
+
+**Lição registrada para não repetir uma terceira vez**: toda tarefa
+futura que altere `desktop/src/*` e for validada só via harness
+headless (por causa da limitação de Accessibility) deve terminar com um
+checklist explícito antes de pedir validação visual ao usuário: (a) o
+`dist/` mais recente contém as strings da mudança? (b) o
+`/Applications/Foliant.app` instalado tem timestamp **posterior** ao
+commit/mudança mais recente em `desktop/src/`? Se a resposta a (b) for
+não, o app precisa ser reconstruído e reinstalado antes de qualquer
+pedido de validação ao usuário — não depois.
+
+## Fase 4.11: correções de UI + feedback do updater + ações pós-conversão + drag-and-drop (2026-09-05)
+
+Só frontend (`desktop/src/*`, `desktop/src-tauri/capabilities/default.json`,
+`desktop/package.json`). `foliant.py` e qualquer heurística de
+OCR/idioma não tocados — confirmado por `git diff --stat` antes de
+fechar a fase.
+
+**Passo 0 (obrigatório pelo meta-prompt) — confirmar que os bugs
+reportados ainda existiam no app atual antes de investigar causa
+raiz**: reproduzido via o mesmo harness headless (Chrome + Playwright
+servindo `desktop/src/` real, módulos Tauri mockados) já usado nas
+Fases 4.8/4.9/4.10, contra o código-fonte tal como estava no início
+desta tarefa (já incluindo a correção de deploy da Fase 4.10). Ambos os
+itens reproduziram:
+- **Item 1**: `.row` (linha que agrupa input + botão "Selecionar…", e a
+  linha "Converter"/"Cancelar") não tinha `gap` nenhum — elementos
+  ficavam colados, sem separação visual, e o input (com `flex: 1` mas
+  sem `min-width: 0`) não tinha regra de truncamento, deixando caminhos
+  longos (ex.: `livro_completo_208pg.pdf`) sem elipse.
+- **Item 2**: clicar em "Verificar atualizações" sem nenhuma atualização
+  disponível não produzia nenhum texto/log visível (confirmado por
+  captura do estado do DOM antes de qualquer correção).
+
+**Item 1 — correção**: `gap: 0.6em` adicionado a `.row` (afeta as duas
+ocorrências — campos de arquivo e botões Converter/Cancelar — sem
+duplicar CSS); `form .row input` ganhou `min-width: 0` +
+`overflow: hidden` + `text-overflow: ellipsis` + `white-space: nowrap`
+para truncar caminhos longos com reticências em vez de forçar o layout;
+`.row button` ganhou `flex-shrink: 0` para o botão nunca perder texto
+legível em favor do input. Solução responsiva (regras de `flex`/`gap`),
+não valores fixos — não deve quebrar de novo na próxima adição de
+elemento à `.row`, ao contrário do que causou o bug original.
+
+**Item 2 — correção**: `verificarAtualizacao(manual = false)` agora
+recebe uma flag. Checagem automática ao abrir o app continua
+**silenciosa** em caso de "sem atualização" ou erro (mesmo padrão de
+apps com auto-update em background — não interromper o usuário toda vez
+que abre o app à toa); só mostra algo quando encontra uma atualização de
+verdade (fluxo já existente da Fase 4.9). Checagem manual (clique no
+botão) sempre mostra uma mensagem curta perto do botão
+(`#status-atualizacao`, some sozinha depois de 5s): "Você já está na
+versão mais recente." (sem update) ou "Não foi possível verificar
+atualizações agora." (qualquer erro — cobre tanto a falta de Release
+publicado, que hoje faz o endpoint responder 404, quanto falha de rede
+real). O erro técnico bruto (`404`, mensagem do `reqwest`, etc.) nunca
+aparece pro usuário — vai só para o log detalhado (`log()`), pra
+depuração.
+
+**Item 3 — correção**: instalado `@tauri-apps/plugin-opener` (o binding
+JS que faltava, pendência registrada na Fase 4.8 — o lado Rust já
+estava registrado desde então). Adicionada a permissão
+`opener:allow-open-path` em `capabilities/default.json` (sem escopo de
+caminho — ver justificativa em `ARCHITECTURE.md`: o destino é
+inteiramente escolhido pelo usuário via diálogo de salvar, mesmo nível
+de confiança já concedido nesse fluxo). `opener:default` já cobria
+`allow-reveal-item-in-dir`, então nenhuma permissão nova foi necessária
+para "Ver na Pasta". Banner de sucesso ganhou dois botões: "Abrir EPUB"
+(`openPath`) e "Ver na Pasta" (`revealItemInDir`), ambos com captura de
+erro própria (loga no log detalhado, não quebra a UI).
+
+**Item 4 — correção**: `getCurrentWebview().onDragDropEvent()` de
+`@tauri-apps/api/webview` (já parte do pacote `@tauri-apps/api` já
+instalado — nenhuma dependência nova) — usado em vez dos eventos HTML5
+de drag/drop porque o Tauri intercepta o drop no nível do webview
+(`dragDropEnabled` é `true` por padrão), então os eventos nativos do
+navegador nunca disparariam. Implementado no nível da janela inteira
+(mais natural para uma janela pequena e de propósito único, decidido em
+vez de restringir a uma única `<label>`), com destaque visual (borda
+tracejada azul) durante o "over" via uma classe no `<body>`. No "drop",
+o primeiro caminho é validado por extensão `.pdf` (case-insensitive);
+se não for PDF, rejeitado com mensagem clara no log
+("Arquivo solto não é um PDF, ignorado: ...") — nunca falha
+silenciosamente nem aceita o arquivo errado. PDF válido reaproveita a
+mesma função (`definirPdfSelecionado`) já usada pelo botão
+"Selecionar…", preenchendo também o campo de saída automaticamente
+quando vazio.
+
+**Item 5 — correção**: rótulo trocado de "Idioma (código Tesseract)"
+para "Idioma do documento", com um texto de ajuda discreto abaixo
+("Usado só para reconhecer texto em páginas escaneadas (OCR).").
+Confirmado que o valor padrão (`"por"`) e o comportamento de OCR não
+mudaram — mudança de rótulo/apresentação apenas, detecção automática de
+idioma continua no backlog (Fase 4.6 Parte 2), não antecipada aqui.
+
+**Validação — evidência real, não suposição**:
+- Harness headless (mesma técnica das Fases 4.8/4.9/4.10, com stubs
+  novos para `@tauri-apps/plugin-opener` e `@tauri-apps/api/webview`
+  adicionados ao import map de teste): 20 asserções cobrindo os 5 itens,
+  todas passando — rótulo/ajuda do idioma, ausência de sobreposição
+  (`getBoundingClientRect` comparando bordas dos elementos adjacentes,
+  não só inspeção visual), gap real via `getComputedStyle`, as 3
+  mensagens de feedback do updater (sucesso mostra só o log, "sem
+  update" e "erro" mostram a mensagem amigável certa, erro técnico vai
+  pro log, checagem automática continua silenciosa), os dois botões do
+  banner de sucesso chamando `openPath`/`revealItemInDir` com o caminho
+  certo, e o fluxo completo de drag-and-drop (feedback visual liga/
+  desliga, PDV válido preenche os campos, arquivo inválido rejeitado com
+  mensagem, sem preencher nada). Suite de regressão completa da Fase
+  4.8 (13 asserções) e do guard da Fase 4.9 (5 asserções) reexecutadas
+  sem nenhuma quebra.
+- **Build real de produção** (mesmo processo documentado desde a Fase
+  4.10 — sem `--config` de teste, versão `0.2.0` como está no
+  `tauri.conf.json` commitado, assinado com a chave real do updater),
+  **verificado em `dist/` antes de instalar** (grep confirmando as
+  strings de cada um dos 5 itens no bundle gerado) — aplicando a lição
+  de processo registrada na própria Fase 4.10, não repetindo o mesmo
+  erro pela terceira vez.
+- `/Applications/Foliant.app` antigo removido e o novo instalado, com
+  autorização explícita do usuário antes da ação destrutiva.
+  Confirmado por timestamp que o binário instalado é posterior a todas
+  as mudanças desta fase.
+- Smoke test real: conversão completa do `samples/001-080.pdf` via
+  `/Applications/Foliant.app/Contents/MacOS/foliant-core` invocado
+  diretamente (mesma técnica usada desde a Fase 4 para contornar a
+  limitação de Accessibility deste ambiente) — EPUB de 810.287 bytes
+  gerado com sucesso (TOC com 8 entradas, sem erros), confirmando que o
+  app recém-instalado continua funcional depois dos 5 itens desta fase.
+
+**Risco residual aceito**: nenhum item foi clicado de verdade na janela
+nativa (mesma limitação de Accessibility de sempre) — a cobertura via
+harness headless testa a lógica real do DOM/JS byte a byte (mesmo
+`main.js`/`index.html`/`styles.css` do bundle), mas não passa pelo
+runtime nativo do Tauri (diálogos de arquivo reais, WebView do macOS,
+drag-and-drop do Finder de verdade). Recomendado um teste manual rápido
+do usuário no app real para fechar 100% do critério de aceite —
+especialmente o drag-and-drop, que depende do comportamento real do
+Finder soltando um arquivo na janela, não simulável fielmente fora do
+runtime nativo.
+
+**Fora de escopo, não tocado**: detecção automática de idioma PT/EN
+(Fase 4.6 Parte 2); envio do EPUB por e-mail; redesenho visual mais
+amplo inspirado em wireframe.
+
+## Fase 4.12: correção — "Abrir EPUB" (permissão) e aviso de rejeição do drag-and-drop (2026-09-05)
+
+**Dois bugs reais encontrados na validação manual da Fase 4.11, que o
+harness headless não capturou** — confirma na prática o próprio risco
+residual que a Fase 4.11 já tinha registrado (validação headless não
+substitui interação real para tudo que envolve permissões do SO e
+arquivos de verdade):
+
+1. `"Abrir EPUB"` falhava com `Not allowed to open path`. "Ver na
+   Pasta" funcionava com o mesmo arquivo.
+2. Drag-and-drop de arquivo não-PDF era rejeitado corretamente, mas sem
+   nenhum aviso fora do log colapsado.
+
+**Causa raiz real do Item 1 (código-fonte do plugin, não suposição)**:
+lido `tauri-plugin-opener-2.5.5/src/commands.rs` — o comando IPC
+`open_path` (usado por `openPath()` da JS) recebe `command_scope` e
+`global_scope` e chama `scope.is_path_allowed(...)` antes de executar,
+que por sua vez constrói um `tauri::fs::Scope` só a partir das entradas
+de `allow`/`deny` declaradas na capability para `opener:allow-open-path`
+— sem nenhuma entrada de escopo (só a permissão "pode chamar o
+comando", sem `"allow": [...]`), a lista fica vazia e **tudo** é negado.
+Já `reveal_item_in_dir` (usado por "Ver na Pasta") **não recebe
+parâmetro de escopo nenhum** na assinatura do comando — não há
+checagem de escopo nessa API do plugin, só a permissão de chamar o
+comando, por isso funcionava sem nenhuma configuração extra. Essa
+assimetria entre os dois comandos do mesmo plugin era a causa real —
+não falta de permissão "geral" do opener.
+
+Investigado o padrão recomendado para "caminho escolhido livremente
+pelo usuário em runtime, não fixo em tempo de build": a extensão
+automática de escopo que o `@tauri-apps/plugin-dialog` faz ao usuário
+escolher um caminho **só se aplica ao escopo do `@tauri-apps/plugin-fs`
+e do asset protocol**, não ao escopo próprio (independente) do plugin
+`opener` — confirmado lendo o código-fonte do `Scope` do opener, que só
+lê as entradas declaradas na sua própria capability, nunca o estado de
+escopo de outro plugin. E o `tauri-plugin-opener` não expõe nenhuma API
+Rust pública para estender seu próprio escopo em runtime (diferente do
+`fs` plugin, que expõe `app.fs_scope().allow_file(...)`). Ou seja: não
+existe um mecanismo "escopo dinâmico por caminho escolhido pelo
+usuário" pronto para o `opener` nesta versão — as opções reais eram (a)
+um glob estático amplo o bastante para cobrir qualquer pasta do sistema
+(ex.: `"**"`), abrindo mão de fato do princípio de permissão mínima já
+seguido no resto do projeto, ou (b) um comando Rust próprio que evita a
+checagem de escopo do plugin por completo, chamando a API interna do
+`Opener` diretamente (`app.opener().open_path(...)`, que não passa pelo
+crivo de `is_path_allowed` — esse crivo só existe no wrapper
+`#[tauri::command]` exposto para a IPC da JS, não na struct `Opener`
+em si).
+
+**Correção real aplicada (opção b)**: dois comandos novos em `lib.rs`
+— `registrar_epub_gerado(caminho)` (chamado pela JS assim que uma
+conversão termina com sucesso, guarda o caminho num
+`Mutex<Option<PathBuf>>` de estado do app) e `abrir_epub_gerado()` (sem
+receber caminho nenhum da JS — lê o estado registrado e chama
+`app.opener().open_path(...)` direto). O botão "Abrir EPUB" na UI agora
+chama `invoke("abrir_epub_gerado")`, não mais `openPath()` do plugin.
+Resultado: **escopo real mínimo** — só é possível abrir exatamente o
+arquivo que o próprio backend acabou de gerar nesta sessão, verificado
+no lado Rust (a JS não pode pedir para abrir um caminho arbitrário,
+nem que quisesse) — mais restrito do que qualquer glob estático teria
+sido, e sem precisar de nenhuma entrada de permissão nova em
+`capabilities/default.json` (a permissão `opener:allow-open-path`,
+que não resolvia o problema mesmo com um glob amplo sem entradas de
+escopo, foi removida — não é mais usada). "Ver na Pasta" não precisou
+de nenhuma mudança, continua via `revealItemInDir()` do plugin
+normalmente.
+
+**Correção do Item 2**: novo elemento `#aviso` (mesmo padrão visual do
+banner de sucesso, mas em tom de alerta — laranja/âmbar, não verde),
+com uma função `mostrarAviso(texto)` que aparece e some sozinha depois
+de 5s. Chamado no ponto exato onde o drop de um arquivo não-PDF já era
+rejeitado (o log técnico continua sendo escrito também, para
+depuração) — mensagem visível: "Apenas arquivos PDF são aceitos."
+
+**Validação**:
+- Harness headless atualizado (stub de `invoke` agora simula
+  `registrar_epub_gerado`/`abrir_epub_gerado` fielmente, incluindo o
+  caso de falha "nenhum EPUB gerado") e as 3 suites completas
+  (regressão da Fase 4.8, guard da Fase 4.9, itens da Fase 4.11)
+  re-executadas — 38 asserções, todas passando, nenhuma quebra.
+- `cargo check` confirmando que os dois comandos novos compilam e
+  ficam registrados no `invoke_handler`.
+- Build de produção real, `dist/` verificado antes de instalar (grep
+  confirmando `abrir_epub_gerado`/`registrar_epub_gerado` no
+  `main.js` gerado e o elemento `#aviso` no `index.html` gerado) —
+  mesma disciplina de processo estabelecida na Fase 4.10.
+- `/Applications/Foliant.app` reinstalado com autorização explícita do
+  usuário. **Pendente, aguardando confirmação do próprio usuário**: o
+  meta-prompt desta fase pede explicitamente para não considerar
+  suficiente a validação headless sozinha, dado que foi exatamente essa
+  lacuna que deixou passar os dois bugs originais — o clique real em
+  "Abrir EPUB" e o drop real de um arquivo não-PDF no app instalado
+  precisam ser confirmados visualmente pelo usuário antes de fechar
+  esta fase com 100% de confiança.
+
+**Nota de processo reforçada**: este é o segundo caso concreto (depois
+da Fase 4.10, que foi sobre deploy, não sobre lógica) em que a
+validação headless — necessária neste ambiente sandboxed por causa da
+limitação de Accessibility — não foi suficiente sozinha. Registrado
+como padrão esperado, não exceção: qualquer mudança que envolva
+permissões do SO (arquivos, rede, dispositivos) ou APIs nativas do
+Tauri sem equivalente fiel no stub precisa de confirmação manual real
+antes de ser considerada fechada, mesmo com testes headless 100%
+verdes.

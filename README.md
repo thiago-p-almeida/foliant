@@ -90,7 +90,7 @@ RAM. Detalhes e evidência completa em
 ## Instalação — app desktop (macOS)
 
 O jeito mais simples de usar o Foliant é o app desktop empacotado
-(`Foliant.app`/`Foliant_0.1.0_x64.dmg`, gerado via Tauri). Ele ainda
+(`Foliant.app`/`Foliant_0.2.0_x64.dmg`, gerado via Tauri). Ele ainda
 depende de Tesseract e Calibre instalados separadamente (ver seção
 abaixo) — só o núcleo Python vem embutido.
 
@@ -104,10 +104,24 @@ abaixo) — só o núcleo Python vem embutido.
    Para abrir mesmo assim: clique com o botão direito no ícone do app →
    **Abrir** → confirme no diálogo (ou: Preferências do Sistema →
    Privacidade e Segurança → "Abrir Assim Mesmo", logo após a primeira
-   tentativa de abertura). Só é preciso fazer isso uma vez.
+   tentativa de abertura). Só é preciso fazer isso uma vez — atualizações
+   futuras aplicadas pelo próprio app (ver abaixo) não repetem esse aviso,
+   confirmado com teste real (ver Fase 4.9 em `ARCHITECTURE.md`).
 4. Use o formulário para selecionar o PDF de entrada, o destino do EPUB,
    título, autor e idioma, e acompanhe o log de execução na própria
    janela.
+
+**Atualizações automáticas** (a partir da v0.2.0): o app checa por uma
+versão nova ao abrir e, se encontrar, baixa e instala sozinho (sem
+diálogo de confirmação, mas sempre visível no log da janela), reiniciando
+em seguida. Existe também um botão "Verificar atualizações" para checar
+sob demanda. Isso só funciona a partir desta versão em diante — quem
+tiver uma versão anterior à v0.2.0 instalada precisa repetir a instalação
+manual (passos 1–3 acima) uma última vez para ganhar o mecanismo
+automático. Nota: o canal de distribuição (GitHub Releases) ainda não
+tem nenhuma versão publicada nesta máquina de desenvolvimento — só
+funciona de fato quando o mantenedor publicar o primeiro Release com os
+artefatos (ver `ARCHITECTURE.md`, Fase 4.9).
 
 Para compilar o app a partir do código-fonte:
 
@@ -241,6 +255,35 @@ e não resolvido, ver Fase 4.5 em `ARCHITECTURE.md`. Figuras internas
 reais mencionadas no texto (fluxogramas, nomogramas) também não são
 extraídas como imagem — o EPUB gerado a partir de um livro escaneado
 não tem nenhuma imagem de conteúdo, só a capa (quando extraível).
+
+**Cancelar/fechar o app pode acumular lixo em disco, sem aviso.** Ao
+cancelar uma conversão (botão "Cancelar" ou fechar a janela), o app mata
+o sidecar e o Tesseract de forma confiável — sem processo pendurado em
+background (validado com dado real, ver Fase 4.7 em `ARCHITECTURE.md`).
+Só que, numa janela de tempo pequena (se o processo Python não reagir ao
+sinal de cancelamento a tempo), o binário do sidecar pode deixar pra trás
+uma pasta temporária `_MEIxxxxxx` de dezenas de MB (o binário inteiro
+descompactado). Isso **não é peculiaridade deste app** — é uma limitação
+conhecida e não resolvida do PyInstaller `--onefile` há vários anos
+(ver [issue #902](https://github.com/pyinstaller/pyinstaller/issues/902),
+[#2379](https://github.com/pyinstaller/pyinstaller/issues/2379),
+[#5518](https://github.com/pyinstaller/pyinstaller/issues/5518)): a
+limpeza dessa pasta só acontece se o processo termina normalmente, nunca
+se é morto à força.
+
+**E essas pastas não são limpas sozinhas depois.** Confirmado nesta
+máquina: a limpeza automática diária do macOS (`periodic`) só cobre
+`/tmp`, não a pasta de temporários por usuário onde isso realmente cai
+(a mesma pasta que `tempfile.gettempdir()` retorna no Python — não é
+`/tmp`, ver detalhe em `ARCHITECTURE.md`) — pastas de mais de um mês
+atrás seguem lá, intocadas. Ou seja, cancelamentos
+mal-sucedidos repetidos **acumulam indefinidamente**, sem qualquer aviso
+do sistema — o tipo de coisa que só aparece meses depois como "o disco
+está enchendo sozinho", sem relação óbvia com o Foliant. Se isso
+acontecer, procure manualmente por pastas `_MEIxxxxxx` (e por `tess_*` e
+`tmp*` órfãos do mesmo tipo) dentro da saída de `getconf DARWIN_USER_TEMP_DIR`
+no Terminal, e apague as que não pertencerem a nenhum processo em
+execução.
 
 ## Licença
 

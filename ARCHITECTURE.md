@@ -2447,3 +2447,484 @@ limiar.
   padrão de "generaliza por construção, mas amostra de validação
   estreita" já usado para outros limiares deste projeto. Só 1 livro em
   inglês existe no projeto para validar.
+
+## Fase 4.7: encerramento robusto do sidecar ao fechar o app / botão de cancelar
+
+### Sintoma confirmado na prática
+
+Fechar a janela do `Foliant.app` não matava o sidecar (`foliant-core`) nem
+seus processos filhos (`tesseract`) — `ps aux` mostrava `foliant-core`
+rodando minutos depois do app fechado, consumindo CPU indefinidamente em
+background numa máquina que já é o gargalo do projeto.
+
+### Causa raiz — confirmada com teste real, não assumida
+
+Reproduzido isolando o binário PyInstaller (fora do Tauri): rodar
+`foliant-core samples/001-080.pdf ...` e inspecionar a árvore de
+processos com `ps -o pid,ppid,command` revela **3 níveis**, não 1:
+
+```
+foliant-core (stub do bootloader --onefile, ver Fase 4)  <- pid que o Tauri conhece
+  └─ foliant-core (processo Python real, forkado pelo stub)
+       └─ tesseract (subprocess do pytesseract, 1 por página)
+```
+
+Lido o código-fonte da versão exata pinada em `Cargo.lock`
+(`tauri-plugin-shell 2.3.6`): `CommandChild::kill()`
+(`src/process/mod.rs`) chama `self.inner.kill()` — `SharedChild::kill()`,
+que por baixo é `std::process::Child::kill()` no Unix, e manda `SIGKILL`
+só no pid daquele `Child`, isto é, **só o stub do bootloader** (o nível
+1). O processo Python real (nível 2) e o `tesseract` (nível 3) nunca
+recebem sinal nenhum — ficam órfãos, reparented para o `launchd`, e
+continuam rodando. Confirma exatamente o sintoma relatado.
+
+Não há suporte a grupo de processos na API pública de
+`tauri_plugin_shell::process::Command` (sem `.process_group()`/
+`setsid` expostos) — confirmado lendo `process/mod.rs` inteiro, não só a
+função `kill()`. Também não dá pra usar `killpg` do lado Rust sem
+modificar como o sidecar é spawnado: como o processo é criado via
+`std::process::Command` padrão (sem `setsid`), ele herda o **mesmo grupo
+de processos do próprio app Tauri** — um `killpg` nesse grupo mataria o
+app inteiro junto, não só o sidecar. Essa alternativa foi descartada por
+esse motivo (risco maior que o problema original).
+
+### Mecanismo escolhido: rastreamento de árvore de PIDs via `ps`/`kill`
+
+Descartada a opção de grupo de processos (risco de matar o app junto,
+acima) e descartada também a alternativa de adicionar uma dependência
+nova (`sysinfo`/`libc`) só para isso — o projeto já usa `ps`/`kill` como
+ferramenta de verificação manual em toda a validação documentada desta
+fase (e das anteriores), então automatizar a mesma ferramenta em vez de
+reimplementar a lógica com uma API de baixo nível mantém a superfície de
+mudança pequena.
+
+Implementado em `desktop/src-tauri/src/lib.rs`:
+- Estado gerenciado (`SidecarPid`, um `Mutex<Option<u32>>`) guarda o pid
+  do stub do bootloader (o único pid que o lado JS conhece, via
+  `CommandChild.pid()`), atualizado por dois comandos novos
+  (`registrar_pid_sidecar`/`limpar_pid_sidecar`) chamados de
+  `main.js` logo após `command.spawn()` e no evento `close` do processo.
+- `arvore_de_pids(raiz)`: roda `ps -axo pid=,ppid=` e faz BFS a partir do
+  pid raiz para achar todos os descendentes, qualquer profundidade —
+  cobre os 3 níveis confirmados acima sem hardcodar a profundidade.
+- `matar_arvore(raiz)`: manda `SIGTERM` em todos os pids da árvore
+  primeiro, espera 1,5s, e manda `SIGKILL` em quem sobreviver. O `SIGTERM`
+  primeiro (em vez de `SIGKILL` direto) existe especificamente para dar
+  chance ao handler de `foliant.py` (abaixo) rodar a limpeza do
+  `TemporaryDirectory` antes do processo morrer.
+- Um comando novo `cancelar_conversao` (botão "Cancelar" da UI) e o
+  handler `on_window_event` para `WindowEvent::CloseRequested` chamam a
+  mesma `matar_arvore`, lendo o pid do estado gerenciado. Verificado
+  contra o código-fonte de `tauri 2.11.5` (`src/app.rs`) que
+  `WindowEvent::CloseRequested { api }` com `api.prevent_close()` é a API
+  atual — não assumido de memória. Não usado `prevent_close()`: matar a
+  árvore é rápido o bastante (chamadas de sistema síncronas) para não
+  precisar atrasar o fechamento da janela.
+
+### Limpeza graciosa do lado Python — `SIGTERM` vira `KeyboardInterrupt`
+
+O handler default do Python para `SIGTERM` mata o processo na hora, sem
+rodar o `__exit__` do `with tempfile.TemporaryDirectory()` em
+`foliant.py:main()` — deixaria o cache OCR (JSON-lines) e o HTML
+intermediário órfãos em disco a cada cancelamento. Corrigido registrando
+`signal.signal(signal.SIGTERM, handler)` como uma das primeiras linhas de
+`main()`, onde o handler levanta `KeyboardInterrupt`. A exceção se
+propaga através do `with` (rodando a limpeza durante o unwind, como
+qualquer exceção Python) até ser capturada logo depois, fora do bloco,
+onde o programa imprime `CANCELADO: conversão interrompida.` (prefixo
+`CANCELADO:` que o lado JS usa para diferenciar cancelamento de erro
+genérico) e sai com código 130.
+
+**Teste real do tempo de reação ao sinal** (não assumido): SIGTERM
+mandado direto pro pid do processo Python real, com uma página de OCR em
+andamento — processo morre e imprime a mensagem de cancelamento em
+**~600ms** (medido por polling a cada 300ms). Os 1,5s de espera antes do
+`SIGKILL` de segurança dão margem confortável acima desse número medido.
+
+### Validação — dado real, 2026-09-04, livro de 208 páginas, `.app` de produção
+
+App reconstruído (`pnpm tauri build`), instalado em `/Applications`,
+sidecar embutido conferido por `shasum -a 256` contra o binário-fonte
+(idêntico). Testado via clique real na UI (automação de acessibilidade
+via `osascript`/System Events — desta vez estável contra o binário sem
+assinatura, diferente do artefato de TCC documentado nas Fases 4.1/4.2)
+contra `samples/livro_completo_208pg.pdf`:
+
+| Cenário | `ps aux` (`foliant-core`+`tesseract`) alguns segundos depois | `.epub` parcial no destino | Mensagem na UI |
+|---|---|---|---|
+| Clique em "Cancelar" durante OCR | **zero processos** (confirmado a cada 500ms até 3s) | nenhum | "Cancelando…" → "CANCELADO: conversão interrompida." → "Cancelado pelo usuário." |
+| Fechar a janela durante OCR | **zero processos**, incluindo o próprio app (`foliant-desktop`) | nenhum | N/A (app encerrado) |
+
+**Caminho feliz (não-regressão)**: mesmo `.app`, conversão completa do
+livro de 80 páginas (`samples/001-080.pdf`) sem cancelamento, do início
+ao fim, via clique real na UI — `.epub` de 810KB gerado, UI mostra
+"Processo concluído com sucesso." (não confundido com "Cancelado",
+confirmando que o novo rastreamento de pid não interfere no fluxo
+normal).
+
+**Risco residual explícito — extração `_MEI*` do PyInstaller pode
+acumular indefinidamente, sem limpeza automática em nenhuma camada**: o
+stub do bootloader (nível 1 da árvore) normalmente espera seu filho
+(nível 2) terminar e só então limpa seu próprio diretório de extração
+temporária (`_MEI*` em `tempfile.gettempdir()`) antes de sair. Se o stub
+for morto por `SIGKILL` antes de completar essa limpeza (cenário possível
+se o processo Python real não reagir ao `SIGTERM` dentro dos 1,5s de
+margem — não observado nos testes reais desta fase, mas não garantido
+para todo cenário futuro, ex.: página muito grande travando um
+`image_to_data()` por muito mais que 1,5s), esse diretório fica órfão.
+Não é uma falha do mecanismo de cancelamento em si (o objetivo — matar
+`foliant-core` e `tesseract`, confirmado por `ps aux` — continua
+cumprido), é uma limitação separada do bootloader do PyInstaller, fora do
+controle deste código.
+
+**Confirmado, não apenas hipotético, que isso pode acumular sem limite**:
+(1) é uma limitação conhecida e documentada do próprio PyInstaller há
+vários anos, sem correção — issues
+[#902](https://github.com/pyinstaller/pyinstaller/issues/902),
+[#2379](https://github.com/pyinstaller/pyinstaller/issues/2379) e
+[#5518](https://github.com/pyinstaller/pyinstaller/issues/5518), todos
+confirmando que a limpeza só acontece em saída normal, nunca quando o
+processo é morto à força, e que não há nenhum mecanismo de "limpar
+sobras da execução anterior" no próximo start; (2) verificado nesta
+máquina que a limpeza diária automática do macOS (`/etc/defaults/periodic.conf`,
+`daily_clean_tmps_dirs="/tmp"`) só cobre `/tmp`, não
+`tempfile.gettempdir()` (que aponta para `/var/folders/.../T`, a mesma
+pegadinha documentada desde a Fase 2) — inspecionado esse diretório real
+nesta máquina e encontrados arquivos/pastas de mais de um mês atrás ainda
+presentes, confirmando que nada os remove automaticamente nessa janela de
+tempo. Ou seja: cancelamentos malsucedidos repetidos (o processo não
+reagir a tempo ao `SIGTERM`) acumulam `_MEI*` indefinidamente, sem
+qualquer aviso ao usuário — risco real de disco enchendo aos poucos, não
+só teórico. Nota visível adicionada ao `README.md` (seção "Limitações
+conhecidas") para que o usuário final saiba o que procurar caso note uso
+de disco crescendo sem explicação óbvia, já que a causa (processo já
+terminado há muito) não teria relação aparente com o sintoma (disco
+cheio). Não corrigido nesta fase (fora de escopo: exigiria patchear o
+bootloader compilado do PyInstaller ou trocar de `--onefile` para
+`--onedir`, mudança maior e não pedida) — mitigado só por documentação e
+por instruções manuais de limpeza no `README.md`.
+
+## Fase 4.8: rótulo travado da fase HTML + colapso do painel de log ao concluir
+
+### Bug do rótulo "processando…" travado
+
+`atualizarProgresso()` em `desktop/src/main.js` tem duas responsabilidades
+misturadas: (1) marcar como `concluida` toda fase anterior à que acabou
+de reportar progresso, e (2) atualizar o texto/barra da fase atual. A
+fase "html" (ver Fase 4.6 acima — sem contador granular, só um evento
+`atual:0,total:0`) nunca passa pelo caminho (2) com um valor final,
+porque `foliant.py` não emite um segundo evento de conclusão para ela.
+Sua única transição para "concluída" acontece via caminho (1), quando a
+fase "epub" começa — e esse caminho atualizava classe CSS e largura da
+barra, mas não o texto do contador, deixando "processando…" gravado
+para sempre. Corrigido fazendo o caminho (1) também escrever
+`"concluído"` no contador, mas só quando o texto atual for exatamente
+`"processando…"` — para não sobrescrever fases com contador granular
+(`ocr`, `epub`), que já chegam a esse ponto com seu próprio texto final
+("210/210", "100%") já escrito por si mesmas.
+
+### Colapso do log ao concluir: `<details>` nativo em vez de esconder de vez
+
+Pedido do usuário: não poluir a tela no caminho feliz, mas sem perder o
+log para depuração de conversões futuras problemáticas. Descartada a
+opção de remover/esconder o log de forma irreversível (só um `hidden`
+sem alternativa de reabrir) porque o log é a única fonte de diagnóstico
+disponível nesse app (não há telemetria, não há arquivo de log
+persistido em disco — ver ausência de qualquer sistema de logging
+estruturado no restante do projeto). Escolhido `<details>`/`<summary>`
+nativo do HTML: colapsa visualmente sem remover nada do DOM, sem exigir
+JS para o toggle em si (só para decidir o estado inicial), e é a mesma
+primitiva HTML que qualquer contribuidor futuro reconhece sem precisar
+ler `main.js`. Regra de quando colapsar: reaproveita o mesmo callback
+`command.on("close", ...)` que já existia (não foi criado nenhum sinal
+novo) — colapsa (`open = false`) só quando `dados.code === 0` **e** não
+houve cancelamento; em erro ou cancelamento o log fica como estava
+(aberto), porque nesses casos ele é a informação principal, não
+secundária. Uma nova conversão sempre reabre o log e esconde o banner de
+sucesso incondicionalmente no início do `submit`, para não herdar o
+estado visual da execução anterior.
+
+Avaliado (e descartado nesta fase) adicionar um atalho "abrir pasta no
+Finder" no banner de sucesso via `tauri-plugin-opener`: o plugin já está
+registrado no lado Rust (`Cargo.toml`, `lib.rs`, capability
+`opener:default` em `capabilities/default.json`), mas o binding JS
+(`@tauri-apps/plugin-opener`) não está instalado em
+`desktop/package.json` — adicionar essa dependência é uma mudança de
+build (não só de UI), fora do escopo contido pedido para esta fase.
+
+## Fase 4.9: updater automático (tauri-plugin-updater)
+
+### Motivação
+
+O ciclo de release manual (rebuild sidecar → rebuild frontend → `tauri
+build` → remover o app antigo → reinstalar → repetir o aviso do
+Gatekeeper) já causou um incidente real nesta sessão: uma auditoria de
+qualidade foi conduzida contra um `.app` desatualizado sem ninguém
+perceber. `tauri-plugin-updater` resolve a detecção e instalação
+automática de novas versões, usando uma chave de assinatura própria do
+Tauri — independente da assinatura de código da Apple, que o projeto já
+decidiu não comprar (ver Fase 4, "Decisão Tesseract/Calibre" e a nota de
+Gatekeeper no `README.md`).
+
+### Duas correções de premissa encontradas antes de codar
+
+1. **GitHub Releases não era infraestrutura já em uso.** `gh api
+   repos/thiago-p-almeida/foliant/releases` retornou lista vazia nesta
+   sessão, e o `README.md` nunca referenciou um link de release — o
+   "Download" documentado sempre foi build local. Adotar o padrão de URL
+   `.../releases/latest/download/latest.json` como endpoint do updater
+   **cria** esse canal de distribuição agora, não reaproveita algo que já
+   existia. Só funciona de fato quando o mantenedor publicar manualmente
+   o primeiro Release com os artefatos — não feito nesta tarefa (fora de
+   escopo, ver abaixo).
+2. **Assinatura ad-hoc foi avaliada e descartada** como solução para o
+   aviso do Gatekeeper na primeira instalação manual. Pesquisa (issues
+   oficiais do Tauri/Apple, ver referências no fim desta seção) confirma
+   que `codesign --sign -` (grátis, sem conta Apple Developer) **não**
+   remove o aviso de "Abrir Assim Mesmo" — só notarização paga da Apple
+   remove por completo. Não vale a complexidade adicional só por esse
+   motivo; registrado aqui para nenhuma sessão futura reabrir essa
+   investigação sem saber que já foi descartada e por quê.
+
+### Mecanismo
+
+- **Chave de assinatura**: par gerado com `tauri signer generate` fora
+  do repositório, em `~/.tauri/foliant-updater.key` (privada, protegida
+  por senha aleatória gerada com `openssl rand -base64 32`, permissões
+  `600`) e `~/.tauri/foliant-updater.key.pub` (pública). **A chave
+  pública** está commitada em `desktop/src-tauri/tauri.conf.json`
+  (`plugins.updater.pubkey`) — é seguro publicá-la, só serve para
+  verificar assinaturas, nunca para criá-las. **A chave privada nunca
+  toca o repositório** — vive só nesta máquina, em `~/.tauri/`, fora de
+  qualquer diretório versionado, então não precisou de entrada nova no
+  `.gitignore`. **Se a chave privada ou a senha forem perdidas, não é
+  possível publicar nenhuma atualização futura que os apps já instalados
+  aceitem** — o usuário deve fazer backup próprio de ambas (ex.: gerenciador
+  de senhas) em local seguro fora deste projeto.
+- **Endpoint de produção** (committed):
+  `https://github.com/thiago-p-almeida/foliant/releases/latest/download/latest.json`
+  — padrão de URL estático do GitHub Releases, sem precisar de servidor
+  próprio.
+- **UX de checagem**: automática e silenciosa ao abrir o app (sem
+  diálogo de confirmação antes de baixar/instalar — mesmo padrão do
+  exemplo oficial do plugin; atualizar o próprio app não é uma ação
+  destrutiva de dados do usuário, diferente das ações de conversão, que
+  seguem 100% explícitas) **+** botão manual "Verificar atualizações"
+  para checagem sob demanda. Qualquer falha (rede, assinatura inválida)
+  é logada visivelmente, nunca falha em silêncio.
+- **Guarda contra relançamento durante conversão em andamento**
+  (exigência de revisão antes da implementação): `relaunch()` mataria o
+  sidecar sem o encerramento gracioso da Fase 4.7 se disparado no meio
+  de uma conversão. `desktop/src/main.js` mantém uma flag
+  `conversaoEmAndamento` (true entre o início do `submit` e o handler de
+  `close` do processo) e uma variável `atualizacaoPendente`: se
+  `verificarAtualizacao()` encontra uma atualização enquanto uma
+  conversão está ativa, ela é **adiada** (log avisa isso explicitamente)
+  em vez de aplicada na hora, e só é instalada no handler de `close` da
+  conversão em curso, depois que ela termina. Opção escolhida (versus
+  "matar o sidecar graciosamente e instalar na hora") por ser mais
+  simples e por não haver motivo para interromper um trabalho do usuário
+  já em andamento só porque uma atualização apareceu.
+
+### Achados reais de validação (não suposição)
+
+Testado localmente por completo (build "antiga" v0.2.0 → "nova" v0.2.1,
+servidor HTTP local simulando o endpoint, nunca publicado de verdade)
+antes de qualquer consideração de release real — ver evidência detalhada
+em `TASKS.md`, Fase 4.9. Dois achados que corrigem expectativas da fase
+de investigação, não confirmadas às cegas:
+
+1. **O endpoint do updater exige HTTPS por padrão mesmo em builds
+   locais** — `tauri-plugin-updater` valida o esquema da URL no
+   deserializador da config (`src/config.rs`, `validate_endpoints`) e
+   recusa `http://` fora de modo dev, com uma mensagem de erro clara.
+   Contornado **só para os builds de teste** com a flag
+   `dangerousInsecureTransportProtocol: true` passada via `tauri build
+   --config` (nunca commitada em `tauri.conf.json` — o endpoint real de
+   produção é HTTPS via GitHub Releases, então a flag não é necessária
+   ali).
+2. **Confirmado com teste real, não suposição** (era a Ressalva 2 da
+   aprovação do plano): depois de um update real aplicado pelo próprio
+   updater (download via `reqwest` interno do plugin, não navegador),
+   `xattr -r` no `.app` resultante e no binário do sidecar embutido não
+   mostrou **nenhum** atributo estendido — em particular, sem
+   `com.apple.quarantine`. Isso é consistente com o mecanismo real do
+   macOS: o atributo de quarentena é aplicado por aplicativos
+   "quarantine-aware" (Safari, Mail, Finder ao extrair um `.zip` baixado
+   etc.) via uma API específica no momento do download/extração pelo
+   usuário — não é algo que o kernel aplica a qualquer dado que chegue
+   pela rede. Um downloader interno de um processo Rust (`reqwest`) não
+   aciona esse mecanismo. **Conclusão real, testada**: atualizações
+   aplicadas pelo próprio updater não devem reacender o aviso do
+   Gatekeeper — só a primeira instalação manual (`.dmg` baixado via
+   navegador, que **esse sim** recebe quarentena) precisa do passo
+   "Abrir Assim Mesmo" documentado no `README.md`.
+
+### Processo de publicar uma nova versão (a partir de agora)
+
+1. Bump de versão em três arquivos: `desktop/src-tauri/Cargo.toml`,
+   `desktop/src-tauri/tauri.conf.json` e `desktop/package.json` (mantidos
+   em sincronia por convenção do projeto, não por exigência técnica do
+   Tauri — só `tauri.conf.json` é a fonte de verdade lida em runtime).
+2. Build assinado:
+   ```bash
+   export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/foliant-updater.key)"
+   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="<senha guardada no gerenciador de senhas>"
+   cd desktop && pnpm tauri build
+   ```
+   Isso gera, além do `.dmg`/`.app` de sempre, `Foliant.app.tar.gz` e
+   `Foliant.app.tar.gz.sig` (graças a `"createUpdaterArtifacts": true`
+   em `tauri.conf.json`).
+3. Montar `latest.json` (schema: `version`, `notes`, `pub_date`,
+   `platforms."darwin-x86_64".{url,signature}` — `signature` é o
+   conteúdo do `.sig` gerado no passo 2).
+4. Publicar um GitHub Release anexando `.dmg`, `Foliant.app.tar.gz`,
+   `Foliant.app.tar.gz.sig` e `latest.json` — o padrão de URL
+   `/releases/latest/download/<arquivo>` só resolve para o Release mais
+   recente publicado (não rascunho/pre-release).
+
+### Fora de escopo (confirmado, não implementado nesta fase)
+
+- **Automação via GitHub Actions** para assinar/publicar builds a cada
+  tag — possibilidade futura real (o repositório já tem `origin` no
+  GitHub), mas a chave privada precisaria de um processo de secret
+  management mais cuidadoso (GitHub Actions secrets, rotação, etc.) que
+  merece tarefa própria, não decidido de forma apressada aqui.
+- Publicar de fato um Release real no GitHub como parte desta tarefa —
+  toda a validação foi local, com servidor HTTP de teste.
+
+### Referências consultadas
+
+- Documentação oficial do plugin Updater (v2.tauri.app/plugin/updater).
+- Discussões sobre ad-hoc signing e quarentena em macOS sem conta Apple
+  Developer (issues públicas do `tauri-apps/tauri` e
+  `tauri-apps/tauri-docs`, e fóruns da Apple Developer sobre
+  `com.apple.quarantine` em Ventura 13.1+).
+
+## Fase 4.10: incidente — app instalado nunca recebeu a Fase 4.8
+
+Evidência completa (timestamps, git log, saída de `grep`) em
+`TASKS.md`, Fase 4.10. Resumo da causa raiz: o código da Fase 4.8 estava
+correto e commitado no sentido de "salvo em disco" (nunca havia pedido
+de commit git — política do projeto é só commitar sob pedido explícito),
+foi validado via harness headless (mesma limitação de Accessibility das
+Fases 4.1/4.2), mas os builds reais gerados durante a validação da Fase
+4.9 foram todos copiados para diretórios de scratchpad de teste — nunca
+para `/Applications`. O `.app` que o usuário efetivamente abre continuou
+sendo um build de antes da Fase 4.8 existir. Não é regressão de lógica;
+é uma lacuna no processo de "validar via harness headless" quando esse
+harness não cobre — e não pode cobrir, dado o ambiente sandboxed — o
+passo final de "o binário instalado é realmente o novo?".
+
+**Mudança de processo adotada a partir de agora**: qualquer tarefa que
+altere `desktop/src/*` e só puder ser validada via harness headless
+(por não haver acesso de Accessibility neste ambiente) deve, antes de
+pedir validação visual ao usuário, confirmar explicitamente que
+`/Applications/Foliant.app` tem timestamp posterior à mudança de
+código — e reconstruir/reinstalar se não tiver. Esta é a primeira
+ocorrência documentada deste padrão específico neste projeto (build
+correto nunca chegando ao `.app` instalado) — a checagem deixa de ser
+best-effort e passa a ser parte do critério de conclusão de qualquer
+fase de frontend a partir de agora.
+
+Sobre o alcance do updater automático (Fase 4.9) para mudanças de
+frontend: tecnicamente ele cobriria — `createUpdaterArtifacts` empacota
+o `.app` inteiro, com o `dist/` já embutido no binário pelo próprio
+Tauri em tempo de build, não carregado à parte em runtime. Mas isso é
+irrelevante enquanto nenhum Release real for publicado no GitHub (ainda
+não foi, ver Fase 4.9): sem Release, o updater não tem nenhum efeito
+prático, e todo o ciclo de atualização — visual ou de backend — continua
+100% manual.
+
+## Fase 4.11: correções de UI + opener + drag-and-drop
+
+Evidência de validação completa em `TASKS.md`, Fase 4.11. Aqui, só as
+decisões técnicas não óbvias.
+
+**Binding JS do opener instalado** (pendência aberta desde a Fase 4.8):
+`@tauri-apps/plugin-opener` adicionado a `desktop/package.json`. O lado
+Rust já tinha `tauri-plugin-opener` registrado desde a Fase 4.8 — só
+faltava mesmo o pacote JS. Permissão `opener:allow-open-path` adicionada
+**sem escopo de caminho** (`{"identifier": "opener:allow-open-path"}`,
+sem `"allow": [...]`), diferente do padrão de escopo mínimo usado em
+`shell:allow-spawn` (que restringe a um binário e argumentos
+específicos). Motivo: o `opener:allow-open-path` do plugin suporta
+escopo por glob de caminho (`{"path": "..."}`, ver
+`tauri-plugin-opener-2.5.5/src/scope.rs`), mas o destino do EPUB é
+**inteiramente escolhido pelo usuário** via diálogo nativo de salvar
+(`@tauri-apps/plugin-dialog`, `save()`) — pode ser qualquer lugar do
+disco. Restringir a um glob fixo (ex.: `$HOME/**`) só criaria uma falsa
+sensação de escopo, sem reduzir de fato a superfície de risco (o usuário
+já escolheu esse caminho explicitamente no fluxo normal do app, mesmo
+nível de confiança). `opener:default` já cobre `allow-reveal-item-in-dir`
+(usado por "Ver na Pasta") — nenhuma permissão adicional foi necessária
+para esse botão.
+
+**Drag-and-drop — mecanismo escolhido**: `getCurrentWebview().onDragDropEvent()`
+de `@tauri-apps/api/webview`, não os eventos HTML5 padrão (`ondrop`,
+`ondragover`). O Tauri intercepta o drop no nível nativo do webview por
+padrão (`dragDropEnabled: true`, valor padrão não alterado neste
+projeto), o que impede os eventos DOM de drag-and-drop de disparar —
+só a API própria do Tauri recebe o evento. Escopo do drop: **a janela
+inteira**, não só o campo "PDF de entrada" — decisão deliberada dado que
+é uma janela pequena e de propósito único (converter um PDF por vez),
+então restringir a área de drop a um `<label>` específico só adicionaria
+fricção sem benefício real de UX. Validação de extensão feita no lado
+JS (checagem simples de sufixo `.pdf`, case-insensitive) — não há
+validação de conteúdo real do arquivo (magic bytes) nesta camada, mesmo
+nível de confiança já implícito no filtro do diálogo nativo de seleção
+(`filters: [{ name: "PDF", extensions: ["pdf"] }]`), que também não
+valida o conteúdo do arquivo, só a extensão.
+
+**Feedback do updater — por que a checagem automática continua
+silenciosa**: decisão deliberada, não descuido. Mostrar "você já está
+atualizado" toda vez que o app abre seria ruído (mesmo padrão que
+Chrome/VS Code/Slack seguem — só interrompem o usuário quando há algo
+para fazer). A checagem manual (clique explícito no botão) é o único
+caminho que garante uma resposta visível, porque aí o usuário
+deliberadamente pediu uma resposta.
+
+## Fase 4.12: correção do escopo do "Abrir EPUB" + aviso de drag-and-drop
+
+Evidência completa em `TASKS.md`, Fase 4.12. Aqui, só a decisão técnica
+não óbvia.
+
+**Por que "Abrir EPUB" precisou de um comando Rust próprio, em vez de
+só ajustar a permissão do plugin `opener`**: o comando IPC `open_path`
+do `tauri-plugin-opener` (2.5.5) checa um escopo próprio de
+caminhos-permitidos construído só a partir das entradas declaradas na
+capability (`opener:allow-open-path`) — sem uma entrada `"allow":
+[{"path": ...}]`, nada passa. Como o destino do EPUB é escolhido
+livremente pelo usuário via diálogo nativo (`save()` do
+`@tauri-apps/plugin-dialog`), não existe um caminho fixo conhecido em
+tempo de build para declarar na capability. A extensão automática de
+escopo que o plugin de diálogo faz ao usuário escolher um arquivo cobre
+só o escopo do `@tauri-apps/plugin-fs`/asset protocol — **não** o
+escopo próprio, independente, do plugin `opener` (confirmado lendo o
+código-fonte do `Scope` do opener: ele só enxerga as entradas
+declaradas na sua própria capability). E o `opener` não expõe nenhuma
+API Rust para estender esse escopo em runtime (ao contrário do `fs`,
+que tem `app.fs_scope().allow_file(...)`).
+
+Com isso, as únicas opções reais eram: (a) um glob estático amplo
+(`"**"` ou equivalente) cobrindo qualquer pasta do sistema — abriria
+mão do princípio de permissão mínima já seguido no resto do projeto
+(`shell:allow-spawn` escopado a um binário específico, por exemplo); ou
+(b) um comando Rust próprio do app que chama `app.opener().open_path()`
+diretamente — essa chamada de baixo nível não passa pelo crivo de
+`is_path_allowed()`, que só existe no wrapper `#[tauri::command]`
+exposto para IPC, não na struct `Opener` em si. Escolhida a opção (b):
+dois comandos novos (`registrar_epub_gerado`/`abrir_epub_gerado`) que
+guardam e depois abrem **só o caminho exato que o próprio backend
+acabou de gerar**, verificado inteiramente no lado Rust — resultado
+mais restrito que qualquer glob estático teria sido (o app só pode
+abrir um arquivo: o que ele mesmo produziu), sem precisar de nenhuma
+permissão nova na capability. `opener:allow-open-path` foi removida do
+`capabilities/default.json` por não ser mais usada.
+
+**Confirma o padrão de risco já documentado desde a Fase 4.11**: os
+dois bugs desta fase (permissão do opener e feedback ausente do
+drag-and-drop) só apareceram na validação manual real, não no harness
+headless — reforça que qualquer mudança envolvendo permissões do SO ou
+API nativa sem stub fiel precisa de confirmação manual, mesmo com
+testes headless 100% verdes.
