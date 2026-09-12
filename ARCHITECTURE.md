@@ -3115,3 +3115,45 @@ ficou pronta primeiro, ela ocupou o 4.14 e a calibração pendente foi
 renumerada para Fase 4.15 (referências corrigidas em `TASKS.md` e
 acima, nesta mesma seção).
 
+## Fase 4.16: conversão silenciosamente vazia — detecção por página + ativação de `com_ressalva`
+
+Evidência completa em `TASKS.md`, Fase 4.16, e em TRACE.md, oitavo
+episódio. Aqui, só as decisões técnicas não óbvias.
+
+**Por que não é a Fase 4.15**: a Fase 4.13.1/4.14 reservou o número
+4.15 especificamente para calibração de tempo estimado e de threshold
+de confiança do Tesseract (`image_to_data` já retorna `conf` por
+bloco, mas o valor de corte nunca foi estimado contra dado real) — essa
+calibração continua **não feita**. Esta fase ativa `com_ressalva` por
+um caminho genuinamente diferente: não um score de confiança, mas a
+mesma condição binária ("nenhum parágrafo, nenhum título") que já
+existia, sem nome, na linha de `construir_html` que decidia entre
+conteúdo real e o `<p>&#160;</p>` de preenchimento — e que foi
+exatamente a causa raiz do EPUB vazio investigado antes desta fase. Não
+consumir o número 4.15 aqui evita repetir a confusão de numeração já
+registrada acima para a Fase 4.14 (uma fase reservada para calibração
+sendo ocupada por outra coisa).
+
+**Por que abortar antes do Calibre no caso 100%, e não deixá-lo rodar e
+descartar o resultado depois**: no momento em que `main()` sabe que
+`len(paginas_sem_texto) == total`, a passada de OCR (`primeira_passada`,
+a parte cara do pipeline) já rodou por completo — não tem como saber
+isso mais cedo sem processar cada página. Mas o Calibre (`convert_to_ebook`)
+ainda não foi chamado nesse ponto; puxar o `FALHA:` para antes dessa
+chamada evita gerar um `.epub` que seria só marcadores de página em
+branco, sem custo adicional de reestruturar o pipeline.
+
+**Por que a numeração de página é a posição física, não um rótulo
+`/PageLabels`**: verificado com um PDF construído de propósito (3
+páginas físicas, `/PageLabels` declarando `i, ii, 1` — front-matter
+romano antes do corpo arábico) que o valor reportado por
+`construir_html` (`i+1` do loop, mesma numeração de `id="pg-N"`) diverge
+do rótulo que um leitor de PDF ciente de `/PageLabels` (Preview.app,
+Acrobat) mostraria para a mesma página física. Escolha deliberada,
+não ingenuidade: PDFs escaneados (o alvo do projeto) quase nunca
+declaram `/PageLabels` — é metadado de autoria digital —, e mesmo
+quando existe, nem todo visualizador o respeita (Chrome/Firefox, por
+exemplo, ignoram e mostram sempre a posição física). Risco residual
+declarado, não escondido: um PDF que declare `/PageLabels` customizado
+pode fazer o número reportado divergir do que aparece na barra de
+página de alguns leitores.

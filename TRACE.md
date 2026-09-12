@@ -881,3 +881,65 @@ teste.
 
 ---
 
+# Oitavo episódio — a conversão que "dava certo" sem produzir nada
+
+A causa raiz do EPUB vazio investigado no ciclo anterior estava num
+`elif` de três linhas em `construir_html`: quando uma página não gerava
+nenhum parágrafo real e também não tinha título detectado, o código
+escrevia `<p>&#160;</p>` — um espaço em branco — só para a seção não
+ficar vazia no HTML. Essa linha nunca foi pensada como uma decisão sobre
+qualidade de conversão; era só um detalhe de formatação para o Calibre
+não reclamar de uma `<section>` vazia. O efeito colateral, nunca
+percebido até o ciclo anterior, é que ela mascarava silenciosamente
+páginas onde o OCR não extraiu absolutamente nada — o pipeline saía com
+`exit 0` e a mensagem "Concluído", como se tivesse convertido um livro
+de verdade. A evidência que expôs isso foi literal: um PDF de 3 páginas
+de ruído puro gerou um `.epub` de 3 páginas, cada uma com o conteúdo
+`<p> </p>` — nenhum erro, nenhum aviso, um "sucesso" completamente
+vazio.
+
+A correção não introduziu nenhum critério novo de qualidade de OCR nem
+um threshold de confiança do Tesseract (isso continua não calibrado, é
+a Fase 5.x futura). Ela apenas nomeia e usa a mesma condição binária que
+já existia, silenciosamente, na linha que decidia entre parágrafos reais
+e o `&#160;` de preenchimento — sem parágrafos e sem título é o único
+sinal usado. Essa condição passa a alimentar uma lista de páginas
+afetadas, retornada por `construir_html` e consumida por `main()`: se a
+lista cobre todas as páginas do documento, a conversão é abortada antes
+mesmo de invocar o Calibre (`FALHA:{"motivo": "sem_texto_legivel"}`,
+exit 1) — evitando gastar o passo mais caro do pipeline num resultado
+que já se sabe inútil; se cobre só parte, o EPUB é gerado normalmente,
+com um marcador explícito no lugar do conteúdo ausente em cada página
+afetada (`RESSALVA:{"paginas_sem_texto": [...]}`), e a UI mostra a tela
+"com_ressalva" — um scaffold que existia desde a Fase 4.14 mas nunca
+tinha sido acionado por nenhum caminho real do app.
+
+Um ponto adicional, verificado antes de aceitar a numeração de página
+proposta em vez de assumida: o número reportado ao usuário é a posição
+física da página no arquivo (a mesma de `id="pg-N"`), não um rótulo de
+numeração impressa que o PDF possa declarar via `/PageLabels`. Testado
+com um PDF construído de propósito para divergir nos dois números
+(front-matter em numeração romana, corpo em arábica) — confirmado que o
+valor reportado é sempre a posição física, nunca o rótulo. Para o caso
+real do Foliant (PDFs escaneados), essa é a escolha certa: esse
+metadado praticamente não existe em PDFs de scanner, e mesmo quando
+existe, nem todo visualizador o respeita — mas fica registrado como
+risco residual conhecido, não como garantia universal.
+
+---
+
+# Nono episódio — dist desatualizado mascarando edições de frontend
+
+Os 3 ajustes de UI (seletor de idioma, aviso de idiomas suportados,
+renomeação do card) foram editados corretamente em `desktop/src/*`, mas
+o teste manual inicial não refletiu nenhuma das mudanças. Causa:
+`desktop/dist` (gitignored) é gerado a partir de `desktop/src` via
+`pnpm build:web`, e o `.app` instalado embute um snapshot compilado
+desse `dist` no binário Rust — editar a fonte não altera o binário já
+instalado. O rebuild nunca tinha sido executado após as edições.
+Corrigido rodando `build:web` → `tauri build` → reinstalação manual do
+`.app`. Lição: qualquer validação manual de mudança de frontend precisa
+confirmar, antes de testar, que o pipeline completo (`build:web` +
+`tauri build` + reinstalação) rodou após a última edição — não basta
+confirmar timestamp do `.app` (lição do ep. 5), é preciso confirmar que
+o timestamp é POSTERIOR à edição mais recente do código-fonte.

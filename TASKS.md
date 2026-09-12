@@ -2266,3 +2266,113 @@ threshold de confiança do Tesseract (é a Fase 4.15 em si, não esta
 tarefa); qualquer mudança de cor/tipografia/ícone além do já definido no
 design system (Fase 4.13/4.13.1).
 
+## Fase 4.16: conversão silenciosamente vazia — detecção por página + ativação de `com_ressalva` (2026-09-11)
+
+**Contexto**: investigação da Fase 4.14/4.15 (fixtures de teste de
+falha, ver `tests/fixtures/README.md`) encontrou um bug real e sério: um
+PDF cujas páginas não produzem nenhum texto (ex. ruído puro, sem
+nenhuma estrutura reconhecível) passava pelo pipeline inteiro com `exit
+code 0` e a mensagem "Concluído", gerando um `.epub` cujas páginas
+continham só um espaço em branco (`<p>&#160;</p>`) — um "sucesso"
+completamente vazio, sem nenhum aviso ao usuário. Causa raiz: um `elif`
+de formatação em `construir_html` (evitar `<section>` vazia no HTML)
+mascarava silenciosamente qualquer página sem parágrafo nem título.
+
+**Decisão de produto (já fechada antes da implementação)**: reusar essa
+mesma condição binária, já existente no código, como critério de
+qualidade por página — sem inventar nem calibrar nenhum threshold de
+confiança novo do Tesseract:
+- 0% das páginas sem texto → tela "pronto" (fluxo atual, sem mudança).
+- Algumas páginas sem texto, não todas → tela "com_ressalva" (scaffold
+  da Fase 4.14, nunca disparado até agora): EPUB entregue normalmente,
+  com um marcador de página no lugar do conteúdo ilegível; UI lista os
+  números das páginas afetadas.
+- 100% das páginas sem texto → tela "falha", com mensagem específica
+  ("não há texto legível para converter"), sem sequer invocar o Calibre.
+
+**Implementação**:
+1. `foliant.py`, `construir_html`: assinatura passa de `-> None` para
+   `-> list[int]`. No ponto exato onde o código já decidia entre
+   escrever parágrafos reais ou o `<p>&#160;</p>` de preenchimento, a
+   condição (`not paragrafos and not html_titulo`) passa a alimentar uma
+   lista acumulada (`paginas_sem_texto`, numeração física do PDF,
+   1-based — mesma de `id="pg-N"`), e o marcador escrito no lugar do
+   `&#160;` passa a ser `"[Página N do PDF original não pôde ser
+   transcrita pelo OCR — verifique o arquivo original nesta página.]"`.
+   Nenhum novo loop, nenhuma página extra mantida em memória — o cálculo
+   já acontecia dentro do loop de streaming existente (pass 2, uma linha
+   de cache por vez).
+2. `foliant.py`, `primeira_passada`: retorno ganha `total` (terceiro
+   item da tupla) para `main()` comparar contra `len(paginas_sem_texto)`.
+3. `foliant.py`, `main()`: se `len(paginas_sem_texto) == total`, imprime
+   `FALHA:{"motivo": "sem_texto_legivel"}` e sai com `exit code 1` **sem
+   chamar `convert_to_ebook`** (evita rodar o Calibre à toa quando o
+   resultado já se sabe inútil); senão, se a lista não é vazia, imprime
+   `RESSALVA:{"paginas_sem_texto": [...]}` depois da conversão —
+   mesmo padrão estrutural de `PROGRESS:`/`ANALISE:`/`INSPECAO:`.
+4. `desktop/src/main.js`: `processarLinha` ganha parsing de `RESSALVA:`/
+   `FALHA:` (guardados por invocação num objeto `estadoLinhas`, mesmo
+   padrão de `saidaBruta` em `iniciarInspecao`). O handler de `close` de
+   `iniciarConversao` passa esses dados para `finalizarConversaoComSucesso`
+   (decide `pronto` vs. `com_ressalva`) e para `transicionarPara("falha",
+   { motivo })` (mensagem específica quando `motivo === "sem_texto_legivel"`,
+   genérica em qualquer outro código de saída != 0 — sem regressão do
+   texto já validado).
+5. `desktop/src/index.html`: `renderizarComRessalva` passou a popular o
+   corpo ("X de Y páginas não puderam ser transcritas...") e a ligar o
+   botão `#btn-ver-paginas-ressalva` (existia desde a Fase 4.14, sem
+   handler) a um `<p id="ressalva-lista-paginas" hidden>` novo, revelado
+   ao clicar ("Páginas: 12, 47").
+
+**Numeração de página — verificado, não assumido**: o número reportado
+é a posição física da página no arquivo (`i+1` do loop, mesma de
+`id="pg-N"`), não um rótulo de numeração impressa que o PDF possa
+declarar via `/PageLabels`. Testado com um PDF construído de propósito
+para divergir nos dois valores (front-matter em numeração romana `i,
+ii`, corpo em arábica reiniciando em `1` na 3ª página física) —
+confirmado que o valor reportado (`3`) é sempre a posição física, nunca
+o rótulo (`1`). Escolha correta para o caso real do projeto (PDF
+escaneado): esse metadado praticamente não existe em PDFs de scanner, e
+mesmo quando existe, nem todo visualizador o respeita. Ver TRACE.md,
+oitavo episódio, para o relato completo.
+
+**Validação**:
+1. Terceiro fixture criado, `tests/fixtures/ressalva_parcial.pdf` (2
+   páginas legíveis + 2 de ruído) — cobre o caminho intermediário que
+   não existia antes. Os 3 fixtures de `tests/fixtures/` rodados contra
+   o binário real extraído do `.app` recém-instalado (não só `.venv`):
+   `falha_ocr_ilegivel.pdf` → `FALHA:sem_texto_legivel`, exit 1, nenhum
+   `.epub` gerado; `ressalva_parcial.pdf` → `RESSALVA:{"paginas_sem_texto":
+   [3, 4]}`, exit 0, marcador nas páginas certas; um PDF 100% legível
+   novo → `Concluído`, sem `RESSALVA:`, sem regressão.
+2. Harness headless novo (mesma técnica de importmap das fases
+   anteriores, instalado isolado em scratchpad, descartado após uso — não
+   há suíte persistida no repo, confirmado de novo), 14 asserções: os 3
+   caminhos novos (pronto sem ressalva, com_ressalva com lista de
+   páginas correta, falha com mensagem específica) mais regressão dos
+   caminhos existentes (falha genérica mantém mensagem antiga, cancelar
+   durante conversão continua voltando a `antes_de_converter`). 14/14
+   passaram.
+3. Build de produção real, instalado em `/Applications/Foliant.app` com
+   autorização explícita do usuário, e é esse binário que foi usado na
+   validação do item 1 (não o `.venv` isolado).
+
+**Fora de escopo, não tocado**: `capabilities/default.json`, shape de
+argumentos do sidecar; calibração de tempo estimado ou de threshold de
+confiança do Tesseract (Fase 4.15, continua em aberto — este critério é
+binário, não usa `conf` do Tesseract em nenhum momento).
+
+## Backlog — Fase 5.x (pré-requisito para primeira distribuição a usuários reais)
+
+**Item**: Empacotar Tesseract completo auto-contido (Opção 1, investigação
+já feita)
+
+- **Bloqueado até**: UX/UI e calibração de qualidade (ressalva por página,
+  seletor de idioma, etc.) estarem fechadas e estáveis — evitar tocar em
+  `foliant.py`/`.spec` em paralelo com o ciclo atual de rebuild frequente.
+- **Motivo de não ser "nice to have"**: sem isso, o app só roda na máquina
+  de desenvolvimento (dependência de micromamba instalado manualmente) —
+  é pré-condição para qualquer distribuição a usuário real, não polish.
+- **Referência**: investigação completa já documentada (~67MB, sem
+  bloqueio de licença, `--onefile` terá I/O extra por execução — avaliar
+  `--onedir` se isso se mostrar perceptível).

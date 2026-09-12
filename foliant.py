@@ -838,14 +838,14 @@ def inspecionar_pdf(pdf_path: Path) -> dict:
     }
 
 
-def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[str], Path | None]:
+def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[str], Path | None, int]:
     """Passo 1/2: percorre o PDF uma única vez (render+OCR por página),
     grava o texto bruto de cada página em cache_path (uma linha JSON por
     página — streaming, nunca acumula texto de todas as páginas em RAM),
     identifica as linhas iniciais repetidas (cabeçalho de seção) e detecta
     o título de capítulo de cada página, se houver. Também tenta extrair
     a capa real da 1ª página (ver `extrair_capa`) — retorna
-    (cabeçalhos, caminho da capa extraída ou None).
+    (cabeçalhos, caminho da capa extraída ou None, total de páginas).
 
     O título detectado de uma página CONTINUA contando na análise de
     frequência de cabeçalho abaixo (não é excluído do texto usado para
@@ -902,7 +902,7 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
 
     doc.close()
 
-    return agrupar_cabecalhos(contador, total), capa_path
+    return agrupar_cabecalhos(contador, total), capa_path, total
 
 
 def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -> list[str]:
@@ -934,18 +934,26 @@ def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -
     return paragrafos
 
 
-def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str]) -> None:
+def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str]) -> list[int]:
     """Passo 2/2: lê o cache de texto por página (streaming, sem OCR novo)
     e escreve o HTML final, removendo o cabeçalho de seção repetido
     (quando é a primeira linha da página), promovendo o título de
     capítulo detectado (se houver) para <h2>, limpando o ruído decorativo
-    de OCR e unindo linhas de continuação em parágrafos reais (Tarefa B)."""
+    de OCR e unindo linhas de continuação em parágrafos reais (Tarefa B).
+
+    Retorna a lista de páginas (numeração física do PDF, 1-based — a
+    mesma usada em `id="pg-{i+1}"` abaixo, não um rótulo de numeração
+    impressa que o PDF possa declarar via /PageLabels) que não produziram
+    nenhum parágrafo nem título — mesma condição que antes gerava
+    silenciosamente `<p>&#160;</p>`, sem nenhum threshold novo."""
     print("Passo 2/2: montando HTML a partir do cache...")
     # sem contador granular nesta fase — medido em produção (ver
     # ARCHITECTURE.md, Fase 4.6): monta o HTML de um livro de 208 páginas
     # em bem menos de 1s, tempo desprezível perto do OCR. "total":0 sinaliza
     # à UI para tratar como indeterminado (spinner), não 0/0 de erro.
     print('PROGRESS:{"fase":"html","atual":0,"total":0}')
+
+    paginas_sem_texto: list[int] = []
 
     with cache_path.open(encoding="utf-8") as cache, html_path.open("w", encoding="utf-8") as out:
         out.write(HTML_HEADER.format(titulo=html.escape(titulo)))
@@ -989,10 +997,17 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
             if paragrafos:
                 out.write(paragrafos)
             elif not html_titulo:
-                out.write("<p>&#160;</p>\n")
+                paginas_sem_texto.append(i + 1)
+                marcador = (
+                    f"[Página {i+1} do PDF original não pôde ser transcrita pelo "
+                    "OCR — verifique o arquivo original nesta página.]"
+                )
+                out.write(f"<p>{html.escape(marcador)}</p>\n")
             out.write("</section>\n")
 
         out.write(HTML_FOOTER)
+
+    return paginas_sem_texto
 
 
 # O Calibre não emite uma % contínua — só 3 marcas fixas ao longo da
@@ -1112,9 +1127,22 @@ def main() -> None:
             html_path = tmp_dir / "livro.html"
             cache_path = tmp_dir / "paginas.jsonl"
 
-            cabecalhos, capa_path = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
-            construir_html(cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos)
+            cabecalhos, capa_path, total = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
+            paginas_sem_texto = construir_html(cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos)
+
+            if total > 0 and len(paginas_sem_texto) == total:
+                # Nenhuma página produziu texto — não vale rodar o Calibre
+                # para gerar um EPUB que seria só marcadores de página em
+                # branco. FALHA: segue o mesmo padrão de linha estruturada
+                # de PROGRESS:/ANALISE:/INSPECAO:, para o app desktop
+                # distinguir esta causa específica de um erro genérico.
+                print('FALHA:{"motivo": "sem_texto_legivel"}')
+                sys.exit(1)
+
             convert_to_ebook(html_path, args.saida, titulo=titulo, autor=args.autor, capa_path=capa_path)
+
+            if paginas_sem_texto:
+                print(f"RESSALVA:{json.dumps({'paginas_sem_texto': paginas_sem_texto})}")
     except KeyboardInterrupt:
         # Propagada pelo handler de SIGTERM acima (ou por Ctrl+C manual, uso
         # normal em terminal) — o `with` já rodou __exit__ e removeu o
