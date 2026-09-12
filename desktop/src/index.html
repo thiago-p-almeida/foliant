@@ -8,88 +8,346 @@
   </head>
   <body>
     <main class="container">
-      <h1>Foliant</h1>
-      <p class="subtitle">PDF &rarr; OCR &rarr; EPUB</p>
+      <span class="selo-local">
+        <svg class="icone icone-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path>
+          <path d="m9 12 2 2 4-4"></path>
+        </svg>
+        100% local
+      </span>
 
-      <form id="form-conversao">
-        <label>
-          PDF de entrada
+      <!-- Cada estado da máquina de estados (ver ARCHITECTURE.md) vive num
+           <template> abaixo. #tela recebe só o conteúdo do estado atual via
+           replaceChildren em main.js — o estado anterior é removido do DOM,
+           não escondido por CSS. -->
+      <div id="tela"></div>
+
+      <details class="disclosure">
+        <summary>
+          <span class="disclosure-rotulo">Sobre</span>
+          <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </summary>
+        <div class="disclosure-conteudo">
+          <span class="ajuda">Foliant <span id="versao-app"></span></span>
           <div class="row">
-            <input id="pdf-entrada" type="text" readonly placeholder="Selecione um arquivo .pdf" />
-            <button type="button" id="btn-selecionar-pdf">Selecionar…</button>
+            <button id="btn-verificar-atualizacao" type="button" class="btn-fantasma">Verificar atualizações</button>
+            <span id="status-atualizacao" class="status-atualizacao" role="status"></span>
           </div>
-        </label>
-
-        <label>
-          Salvar EPUB em:
-          <div class="row">
-            <input id="saida" type="text" readonly placeholder="Selecione onde salvar o .epub" />
-            <button type="button" id="btn-selecionar-saida">Selecionar…</button>
-          </div>
-        </label>
-
-        <label>
-          Título
-          <input id="titulo" type="text" placeholder="Foliant" />
-        </label>
-
-        <label>
-          Autor
-          <input id="autor" type="text" placeholder="ALMEIDA, Thiago." />
-        </label>
-
-        <label>
-          Idioma do documento
-          <input id="lang" type="text" value="por" />
-          <span class="ajuda">Usado só para reconhecer texto em páginas escaneadas (OCR).</span>
-        </label>
-
-        <div class="row">
-          <button id="btn-converter" type="submit">Converter</button>
-          <button id="btn-cancelar" type="button" hidden>Cancelar</button>
         </div>
-      </form>
+      </details>
+    </main>
 
-      <div class="linha-atualizacao">
-        <button id="btn-verificar-atualizacao" type="button" class="link-atualizacao">Verificar atualizações</button>
-        <span id="status-atualizacao" class="status-atualizacao" role="status"></span>
+    <template id="tpl-selecionar">
+      <h1>Foliant</h1>
+      <p class="subtitle">Converte um PDF escaneado em um livro digital.</p>
+
+      <div class="dropzone" id="dropzone">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"></path>
+          <path d="M14 2v5a1 1 0 0 0 1 1h5"></path>
+          <path d="M10 9H8"></path>
+          <path d="M16 13H8"></path>
+          <path d="M16 17H8"></path>
+        </svg>
+        <p class="dropzone-titulo" id="dropzone-titulo">Arraste um PDF aqui</p>
+        <span class="dropzone-caminho">ou</span>
+        <button type="button" id="btn-selecionar-pdf">Selecionar arquivo…</button>
+        <span class="dropzone-caminho">Aceita PDF de qualquer tamanho — inclusive apostilas de centenas de MB.</span>
       </div>
 
-      <div id="progresso" class="progresso" hidden>
+      <div id="aviso-arquivo" class="callout callout-aviso" hidden role="alert">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 16v-4"></path>
+          <path d="M12 8h.01"></path>
+        </svg>
+        <span id="aviso-arquivo-texto" class="callout-corpo"></span>
+      </div>
+
+      <div class="cartao-reforco">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path>
+          <path d="m9 12 2 2 4-4"></path>
+        </svg>
+        <p><strong>100% no seu computador.</strong> O arquivo não é enviado para nenhum servidor. Funciona sem internet e em máquina antiga.</p>
+      </div>
+
+      <div class="cartao-reforco cartao-reforco--neutro">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m5 8 6 6"></path>
+          <path d="m4 14 6-6 2-3"></path>
+          <path d="M2 5h12"></path>
+          <path d="M7 2h1"></path>
+          <path d="m22 22-5-10-5 10"></path>
+          <path d="M14 18h6"></path>
+        </svg>
+        <p>Funciona com PDFs em <strong>Português</strong>, <strong>Inglês</strong> e <strong>Espanhol</strong>.</p>
+      </div>
+    </template>
+
+    <template id="tpl-antes_de_converter">
+      <div class="resumo-arquivo">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"></path>
+          <path d="M14 2v5a1 1 0 0 0 1 1h5"></path>
+          <path d="M10 9H8"></path>
+          <path d="M16 13H8"></path>
+          <path d="M16 17H8"></path>
+        </svg>
+        <div class="resumo-arquivo-corpo">
+          <span class="resumo-arquivo-nome" id="ac-nome"></span>
+          <span class="dropzone-caminho" id="ac-meta">Analisando arquivo…</span>
+        </div>
+        <button type="button" class="btn-fantasma" id="btn-trocar-arquivo">Trocar</button>
+      </div>
+
+      <div id="ac-aviso-cancelado" class="callout callout-aviso" hidden role="status">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 16v-4"></path>
+          <path d="M12 8h.01"></path>
+        </svg>
+        <span class="callout-corpo">Cancelado. O progresso desta tentativa não foi aproveitado.</span>
+      </div>
+
+      <div class="cartao">
+        <h2 class="cartao-titulo">Análise do arquivo</h2>
+        <div class="resumo-arquivo-meta" style="margin-bottom: var(--space-3)">
+          <span id="ac-tag-nativas" class="tag tag-brand" hidden></span>
+          <span id="ac-tag-escaneadas" class="tag tag-warning" hidden></span>
+        </div>
+        <p id="ac-explicacao-1" class="ajuda"></p>
+        <p id="ac-explicacao-2" class="ajuda" style="margin-top: var(--space-2)"></p>
+      </div>
+
+      <div class="metadados-compactos">
+        <div class="metadados-compactos-item">
+          <span class="metadados-compactos-rotulo">Tempo estimado</span>
+          <span class="metadados-compactos-valor">~15 min</span>
+        </div>
+        <div class="metadados-compactos-item">
+          <span class="metadados-compactos-rotulo">Salvar em</span>
+          <span class="metadados-compactos-valor" id="ac-salvo-em"></span>
+          <button type="button" class="btn-fantasma" id="btn-alterar-saida">alterar</button>
+        </div>
+      </div>
+
+      <form id="form-conversao">
+        <details class="disclosure disclosure--card">
+          <summary>
+            <span class="disclosure-rotulo">Ajustar título e autor do arquivo (Opcional)</span>
+            <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6"></path>
+            </svg>
+          </summary>
+          <div class="disclosure-conteudo">
+            <label>
+              Título
+              <input id="ac-titulo" type="text" placeholder="Foliant" />
+            </label>
+            <label>
+              Autor
+              <input id="ac-autor" type="text" placeholder="Thiago Almeida" />
+            </label>
+          </div>
+        </details>
+
+        <div class="campo-idioma">
+          <span class="campo-idioma-rotulo">Selecionar idioma do arquivo</span>
+          <div class="segmentado-idioma" id="segmentado-idioma">
+            <button type="button" class="segmentado-idioma-item ativo" data-lang="por">Português</button>
+            <button type="button" class="segmentado-idioma-item" data-lang="eng">Inglês</button>
+            <button type="button" class="segmentado-idioma-item" data-lang="spa">Espanhol</button>
+          </div>
+          <input type="hidden" id="ac-lang" value="por" />
+          <span class="ajuda">Selecione o idioma do seu arquivo.</span>
+        </div>
+
+        <button id="btn-converter" class="btn-primario btn-lg btn-full" type="submit">Converter para EPUB</button>
+
+        <span class="selo-local selo-local--rodape">
+          <svg class="icone icone-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path>
+            <path d="m9 12 2 2 4-4"></path>
+          </svg>
+          100% local, offline e seguro
+        </span>
+      </form>
+    </template>
+
+    <template id="tpl-convertendo">
+      <p class="cartao-titulo" id="cv-nome-arquivo" style="margin: 0 0 var(--space-4);"></p>
+
+      <div id="progresso" class="progresso">
         <div class="fase" data-fase="ocr">
           <div class="fase-cabecalho">
-            <span class="fase-check">&#10003;</span>
-            <span class="fase-nome">OCR + análise</span>
+            <svg class="fase-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 6 9 17l-5-5"></path>
+            </svg>
+            <span class="fase-nome">Reconhecendo o texto</span>
             <span class="fase-contador"></span>
           </div>
           <div class="barra"><div class="barra-preenchimento"></div></div>
         </div>
         <div class="fase" data-fase="html">
           <div class="fase-cabecalho">
-            <span class="fase-check">&#10003;</span>
-            <span class="fase-nome">Montagem do HTML</span>
+            <svg class="fase-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 6 9 17l-5-5"></path>
+            </svg>
+            <span class="fase-nome">Montando o livro</span>
             <span class="fase-contador"></span>
           </div>
           <div class="barra"><div class="barra-preenchimento"></div></div>
         </div>
         <div class="fase" data-fase="epub">
           <div class="fase-cabecalho">
-            <span class="fase-check">&#10003;</span>
-            <span class="fase-nome">Compilação EPUB</span>
+            <svg class="fase-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 6 9 17l-5-5"></path>
+            </svg>
+            <span class="fase-nome">Fechando o EPUB</span>
             <span class="fase-contador"></span>
           </div>
           <div class="barra"><div class="barra-preenchimento"></div></div>
         </div>
       </div>
 
-      <div id="sucesso" class="sucesso" hidden></div>
-      <div id="aviso" class="aviso" hidden role="alert"></div>
+      <div id="status-ao-vivo" class="callout callout-info" hidden role="status">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="m16 9-5.5 5.5L8 12"></path>
+        </svg>
+        <span id="status-ao-vivo-texto" class="callout-corpo"></span>
+      </div>
 
-      <details id="log-detalhes">
-        <summary>Ver log detalhado</summary>
-        <pre id="log"></pre>
+      <p class="ajuda" style="margin-top: var(--space-3);">Pode deixar rodando e usar o computador normalmente.</p>
+
+      <details id="log-detalhes" class="disclosure">
+        <summary>
+          <span class="disclosure-rotulo">Ver log detalhado</span>
+          <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </summary>
+        <div class="disclosure-conteudo">
+          <pre id="log"></pre>
+        </div>
       </details>
-    </main>
+
+      <div class="row" style="justify-content: flex-end; margin-top: var(--space-4);">
+        <button id="btn-cancelar" type="button" class="btn-secundario">Cancelar</button>
+      </div>
+    </template>
+
+    <template id="tpl-pronto">
+      <div id="sucesso" class="callout callout-sucesso"></div>
+
+      <div class="cartao">
+        <h2 class="cartao-titulo">Como levar para o aparelho</h2>
+        <div class="segmentado" id="segmentado-dispositivo">
+          <button type="button" class="segmentado-item ativo" data-dispositivo="Tablet Android">Tablet Android</button>
+          <button type="button" class="segmentado-item" data-dispositivo="Kindle">Kindle</button>
+          <button type="button" class="segmentado-item" data-dispositivo="iPad">iPad</button>
+        </div>
+        <ol class="guia-aparelho" id="guia-aparelho-lista"></ol>
+        <p class="ajuda">Se o app de leitura não achar o livro, abra o gerenciador de arquivos, toque no .epub e use "Abrir com". É comum e não significa que a conversão falhou.</p>
+      </div>
+
+      <details id="log-detalhes" class="disclosure">
+        <summary>
+          <span class="disclosure-rotulo">Ver log detalhado</span>
+          <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </summary>
+        <div class="disclosure-conteudo">
+          <pre id="log"></pre>
+        </div>
+      </details>
+
+      <button type="button" id="btn-reiniciar" class="btn-secundario btn-full">Converter outro PDF</button>
+    </template>
+
+    <!-- Disparado quando algumas páginas (não todas) do PDF não produzem
+         texto útil (RESSALVA:, ver foliant.py/main.js) — critério é a
+         mesma condição binária já usada em construir_html para decidir
+         entre parágrafos reais e o marcador de página ilegível, sem
+         threshold de confiança do Tesseract nenhum. -->
+    <template id="tpl-com_ressalva">
+      <div class="callout callout-aviso" role="status">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" x2="12" y1="8" y2="12"></line>
+          <line x1="12" x2="12.01" y1="16" y2="16"></line>
+        </svg>
+        <div>
+          <strong class="callout-titulo">Pronto, com ressalva.</strong>
+          <p class="callout-corpo" id="ressalva-texto"></p>
+          <div class="callout-acoes">
+            <button type="button" class="btn-fantasma" id="btn-ver-paginas-ressalva">Ver a lista de páginas</button>
+          </div>
+          <p class="ajuda" id="ressalva-lista-paginas" hidden></p>
+        </div>
+      </div>
+
+      <div class="cartao">
+        <h2 class="cartao-titulo">Como levar para o aparelho</h2>
+        <div class="segmentado" id="segmentado-dispositivo">
+          <button type="button" class="segmentado-item ativo" data-dispositivo="Tablet Android">Tablet Android</button>
+          <button type="button" class="segmentado-item" data-dispositivo="Kindle">Kindle</button>
+          <button type="button" class="segmentado-item" data-dispositivo="iPad">iPad</button>
+        </div>
+        <ol class="guia-aparelho" id="guia-aparelho-lista"></ol>
+        <p class="ajuda">Se o app de leitura não achar o livro, abra o gerenciador de arquivos, toque no .epub e use "Abrir com". É comum e não significa que a conversão falhou.</p>
+      </div>
+
+      <details id="log-detalhes" class="disclosure">
+        <summary>
+          <span class="disclosure-rotulo">Ver log detalhado</span>
+          <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </summary>
+        <div class="disclosure-conteudo">
+          <pre id="log"></pre>
+        </div>
+      </details>
+
+      <button type="button" id="btn-reiniciar" class="btn-secundario btn-full">Converter outro PDF</button>
+    </template>
+
+    <template id="tpl-falha">
+      <div id="erro" class="callout callout-erro" role="alert">
+        <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" x2="12" y1="8" y2="12"></line>
+          <line x1="12" x2="12.01" y1="16" y2="16"></line>
+        </svg>
+        <div>
+          <strong class="callout-titulo">A conversão não terminou.</strong>
+          <p class="callout-corpo">A conversão foi interrompida antes de terminar. Nada do que já foi processado é reaproveitado — a próxima tentativa recomeça do zero.</p>
+          <div class="callout-acoes">
+            <button type="button" class="btn-primario" id="btn-tentar-novo">Tentar de novo</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="ajuda" style="margin-top: var(--space-4);">Se o erro persistir, tente baixar o PDF de novo — o arquivo pode estar corrompido.</p>
+
+      <details id="log-detalhes" class="disclosure">
+        <summary>
+          <span class="disclosure-rotulo">Ver log detalhado</span>
+          <svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </summary>
+        <div class="disclosure-conteudo">
+          <pre id="log"></pre>
+        </div>
+      </details>
+    </template>
+
     <script type="module" src="/main.js"></script>
   </body>
 </html>

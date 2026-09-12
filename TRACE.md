@@ -849,3 +849,82 @@ ser mais necessária.
    aceitar" foi aplicado à instrução recebida, não só ao código sendo
    escrito. "Verificar antes de aceitar" vale nas duas direções do
    fluxo de trabalho — não é responsabilidade de um único papel.
+
+---
+
+# Sexto episódio — a hipótese errada sobre múltiplas entradas de scope do shell
+
+A Fase 4.14 declarou duas entradas em `shell:allow-spawn.allow` com o
+mesmo `name` (`binaries/foliant-core`), uma para o shape de conversão (8
+args) e outra para o novo `--inspect` (2 args), presumindo que o motor de
+permissões do Tauri as tratasse como alternativas — a primeira que
+validasse, valeria. Essa suposição nunca foi testada contra uma
+invocação real do sidecar dentro do app nativo (as validações anteriores
+usavam o binário isolado via terminal ou um harness headless com stubs
+de `@tauri-apps/*`, que não exercitam o motor de ACL de verdade). No
+primeiro teste manual real, toda tentativa de `--inspect` falhava com
+`"Scoped command argument at position 3 must match regex validation
+^.+$ but it was not found"` — um erro que só faz sentido para a entrada
+de 8 args, não para a de 2. A leitura do código-fonte do
+`tauri-plugin-shell` (vendorizado em `~/.cargo/registry`) confirmou a
+causa: a resolução de escopo usa `.find(|s| s.name == command_name)`,
+pegando sempre a primeira entrada com aquele nome — não há iteração de
+alternativas, e a segunda entrada era permanentemente inatingível. A
+correção validada é dar um nome distinto por shape de args
+(`binaries/foliant-core-inspect`), registrado como uma segunda entrada
+em `externalBin` apontando para uma cópia do mesmo binário — cada nome
+vira uma chave de busca isolada, sem abrir mão de nenhuma restrição de
+shape. Lição: qualquer validação de ACL/scope do Tauri precisa, cedo ou
+tarde, de um teste real dentro do app nativo — harnesses com API
+stubada não cobrem essa camada, por mais fiel que seja o resto do
+teste.
+
+---
+
+# Oitavo episódio — a conversão que "dava certo" sem produzir nada
+
+A causa raiz do EPUB vazio investigado no ciclo anterior estava num
+`elif` de três linhas em `construir_html`: quando uma página não gerava
+nenhum parágrafo real e também não tinha título detectado, o código
+escrevia `<p>&#160;</p>` — um espaço em branco — só para a seção não
+ficar vazia no HTML. Essa linha nunca foi pensada como uma decisão sobre
+qualidade de conversão; era só um detalhe de formatação para o Calibre
+não reclamar de uma `<section>` vazia. O efeito colateral, nunca
+percebido até o ciclo anterior, é que ela mascarava silenciosamente
+páginas onde o OCR não extraiu absolutamente nada — o pipeline saía com
+`exit 0` e a mensagem "Concluído", como se tivesse convertido um livro
+de verdade. A evidência que expôs isso foi literal: um PDF de 3 páginas
+de ruído puro gerou um `.epub` de 3 páginas, cada uma com o conteúdo
+`<p> </p>` — nenhum erro, nenhum aviso, um "sucesso" completamente
+vazio.
+
+A correção não introduziu nenhum critério novo de qualidade de OCR nem
+um threshold de confiança do Tesseract (isso continua não calibrado, é
+a Fase 5.x futura). Ela apenas nomeia e usa a mesma condição binária que
+já existia, silenciosamente, na linha que decidia entre parágrafos reais
+e o `&#160;` de preenchimento — sem parágrafos e sem título é o único
+sinal usado. Essa condição passa a alimentar uma lista de páginas
+afetadas, retornada por `construir_html` e consumida por `main()`: se a
+lista cobre todas as páginas do documento, a conversão é abortada antes
+mesmo de invocar o Calibre (`FALHA:{"motivo": "sem_texto_legivel"}`,
+exit 1) — evitando gastar o passo mais caro do pipeline num resultado
+que já se sabe inútil; se cobre só parte, o EPUB é gerado normalmente,
+com um marcador explícito no lugar do conteúdo ausente em cada página
+afetada (`RESSALVA:{"paginas_sem_texto": [...]}`), e a UI mostra a tela
+"com_ressalva" — um scaffold que existia desde a Fase 4.14 mas nunca
+tinha sido acionado por nenhum caminho real do app.
+
+Um ponto adicional, verificado antes de aceitar a numeração de página
+proposta em vez de assumida: o número reportado ao usuário é a posição
+física da página no arquivo (a mesma de `id="pg-N"`), não um rótulo de
+numeração impressa que o PDF possa declarar via `/PageLabels`. Testado
+com um PDF construído de propósito para divergir nos dois números
+(front-matter em numeração romana, corpo em arábica) — confirmado que o
+valor reportado é sempre a posição física, nunca o rótulo. Para o caso
+real do Foliant (PDFs escaneados), essa é a escolha certa: esse
+metadado praticamente não existe em PDFs de scanner, e mesmo quando
+existe, nem todo visualizador o respeita — mas fica registrado como
+risco residual conhecido, não como garantia universal.
+
+---
+

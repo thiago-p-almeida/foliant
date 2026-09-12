@@ -239,6 +239,17 @@ automatizada já é suficiente é, na prática, parte do mesmo padrão de
 disciplina descrito nas skills acima: não pedir mais evidência do que o
 critério de aceite exige, mas também não menos.
 
+**Regra específica para `desktop/src/*`**: `desktop/dist` (gitignored) só
+reflete o código-fonte depois de `pnpm build:web`, e o `.app` instalado
+só reflete `dist` depois de `tauri build` + reinstalação manual. Editar
+`desktop/src/*` não altera nada que o usuário já tenha instalado. Por
+isso, todo meta-prompt que peça alteração em `desktop/src/*` deve exigir
+explicitamente, no critério de validação, a sequência completa
+`build:web` → `tauri build` → reinstalação **antes** de qualquer teste
+manual ser solicitado ao usuário — nunca deixar essa etapa implícita.
+Ver [`TRACE.md`, nono episódio](TRACE.md) para o incidente que motivou
+esta regra.
+
 ## Limitações conhecidas
 
 As heurísticas de detecção (cabeçalho de página repetido, título de
