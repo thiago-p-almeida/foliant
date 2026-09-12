@@ -25,6 +25,11 @@
             "--titulo",
             { "validator": ".*" }
           ]
+        },
+        {
+          "name": "binaries/foliant-core-inspect",
+          "sidecar": true,
+          "args": [{ "validator": ".+" }, "--inspect"]
         }
       ]
     }

@@ -3034,3 +3034,84 @@ nenhuma dependência nova instalada, só um arquivo stub + importmap) é
 reaproveitável para validação de lógica JS em fases futuras, sem
 esperar acesso à janela nativa.
 
+## Fase 4.14: máquina de estados por tela + inspeção rápida do PDF
+
+Evidência completa em `TASKS.md`, Fase 4.14. Aqui, só as decisões
+técnicas não óbvias.
+
+**Por que `<template>` + `replaceChildren` em vez de mais uma camada de
+`hidden`**: o pedido explícito era que o estado anterior desaparecesse
+de verdade do DOM, não só fique invisível por CSS acumulando nós mortos
+— um mini-framework de componentes seria over-engineering para 6 telas
+sem build step de componentes; `<template>` nativo do HTML é o
+mecanismo padrão do próprio DOM para exatamente esse caso (conteúdo
+inerte até ser clonado), sem dependência nova. A consequência
+obrigatória, não opcional: nenhuma das antigas consts de module scope
+(`pdfInput`, `saidaInput`, `logEl` etc.) podia sobreviver — cada
+renderizador de estado (`renderizarSelecionar`, `renderizarPronto`...)
+re-busca seus elementos via `telaEl.querySelector(...)` depois do
+clone, e elementos usados por callbacks assíncronos (log, progresso,
+avisos) são sempre re-consultados no momento do uso, nunca cacheados
+antes.
+
+**Guard de invocação (`idInvocacaoAtual`), por que é obrigatório e não
+só depuração**: o sidecar Python é morto via SIGKILL da árvore de
+processos (`cancelar_conversao` em `lib.rs`, Fase 4.7), não por um
+sinal que o app espera de volta — o evento `close` do `Command` chega
+de forma assíncrona, num momento não determinístico depois do clique em
+"Cancelar". Como a decisão de fluxo desta fase é navegar para
+`antes_de_converter` assim que esse `close` chega (não antes), existe
+uma janela real onde uma segunda invocação (reconverter, trocar de
+arquivo) já está em andamento quando um evento tardio de uma invocação
+anterior finalmente dispara. Sem comparar o id capturado no início de
+cada operação contra o contador global antes de qualquer efeito
+colateral, esse evento tardio reescreveria a tela atual — cenário
+reproduzido de propósito no harness (disparar manualmente o `close` de
+uma instância de sidecar já superada) para confirmar que o guard
+funciona na prática, não só em teoria.
+
+**Por que a inspeção (`--inspect`) não é OCR "menor"**: reaproveita
+exatamente o mesmo scan de `get_text("text")` por página que
+`primeira_passada()` já fazia para a linha `ANALISE:` (Fase 4.13.1) —
+extraído para uma função só (`contar_nativas`) para as duas nunca
+divergirem — mas roda ISOLADA, antes de qualquer render/OCR real e sem
+`check_dependencies()`, porque o objetivo é popular a tela "antes de
+converter" rápido o bastante para não parecer travado, mesmo em
+apostilas de centenas de MB. Erros esperados de PDF (protegido por
+senha, corrompido, sem páginas) são tratados dentro de
+`inspecionar_pdf()` e devolvidos como dado estruturado
+(`INSPECAO_ERRO:`), não como exceção não tratada — o processo sempre
+sai com código 0 nos dois casos (sucesso ou erro esperado), porque os
+dois são resultados que a UI trata, não crashes.
+
+**Por que uma nova entrada em `capabilities/default.json`, e não uma
+alteração da existente**: o validador de `shell:allow-spawn` do Tauri
+casa args por posição e é rígido por design (Fase 4.11/4.12 já
+documentam esse comportamento para outros comandos) — o shape de 8 args
+fixos da conversão real (`pdf, saida, --lang, ..., --autor, ...,
+--titulo, ...`) não bate com o shape de 2 args do `--inspect`
+(`pdf, --inspect`), e não há coringa que cubra os dois sem afrouxar a
+validação além do necessário. Duas entradas específicas mantêm o
+princípio de permissão mínima já seguido no resto do projeto (mesma
+lógica da Fase 4.12, sobre o escopo do `opener`).
+
+**Harness desta fase, evolução do padrão da Fase 4.13.1**: mesma ideia
+(`importmap` remapeando os specifiers nus do Tauri para stubs locais,
+`main.js`/`index.html` reais carregados sem cópia), mas com stubs mais
+ricos — cada instância de `Command.sidecar()` fica endereçável
+individualmente (`window.__sidecarInstances[i]`), permitindo ao script
+de teste simular duas invocações concorrentes do sidecar (inspeção +
+conversão) e disparar o `close` de uma instância antiga depois que uma
+nova já está em andamento — exatamente o cenário que o guard de
+`idInvocacaoAtual` precisa cobrir. Rodado via `puppeteer-core`
+conectado ao Chrome já instalado no sistema (sem baixar Chromium
+próprio), instalado isolado no diretório de scratchpad da sessão — não
+é dependência do projeto, só ferramenta de validação desta sessão.
+
+**Nota de numeração**: a Fase 4.13.1 já tinha reservado o número "Fase
+4.14" para a calibração de tempo estimado/threshold de confiança do
+Tesseract, ainda não iniciada. Como esta fase (reorganização de telas)
+ficou pronta primeiro, ela ocupou o 4.14 e a calibração pendente foi
+renumerada para Fase 4.15 (referências corrigidas em `TASKS.md` e
+acima, nesta mesma seção).
+

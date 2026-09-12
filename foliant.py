@@ -784,6 +784,60 @@ def extrair_capa(doc: "pymupdf.Document", destino_dir: Path) -> Path | None:
     return None
 
 
+def contar_nativas(doc: "pymupdf.Document", total: int) -> int:
+    """Quantas páginas já têm camada de texto nativa (não precisam de
+    OCR). `get_text` só lê essa camada, sem renderizar nem chamar
+    Tesseract — custo desprezível perto do OCR real. Compartilhada entre
+    `primeira_passada` (ANALISE: emitido durante a conversão real) e
+    `inspecionar_pdf` (--inspect, antes de o usuário confirmar a
+    conversão) para as duas nunca divergirem no critério de "nativa"."""
+    return sum(1 for i in range(total) if doc.load_page(i).get_text("text").strip())
+
+
+def derivar_titulo_do_nome(pdf_path: Path) -> str:
+    """Deriva um título legível do nome do arquivo quando o PDF não tem
+    metadado de título — usado só por `inspecionar_pdf` para pré-popular
+    a tela "antes de converter"; não altera o fallback já existente em
+    `main()` (que usa o stem cru)."""
+    nome = re.sub(r"[_\-]+", " ", pdf_path.stem)
+    nome = re.sub(r"\s+", " ", nome).strip()
+    return nome.title() if nome else pdf_path.stem
+
+
+def inspecionar_pdf(pdf_path: Path) -> dict:
+    """Inspeção rápida (--inspect): metadados + contagem nativas/
+    escaneadas, sem OCR nem dependência de Tesseract/Calibre — só para
+    popular a tela "antes de converter" antes do usuário confirmar. Erros
+    esperados (arquivo criptografado, corrompido, sem páginas) voltam
+    como dict de erro em vez de propagar a exceção, já que o processo
+    pai (main.js) trata isso como um resultado, não como um crash."""
+    try:
+        doc = pymupdf.open(pdf_path)
+    except Exception as erro:
+        return {"erro": "corrompido", "detalhe": str(erro)}
+
+    if doc.needs_pass:
+        return {"erro": "criptografado"}
+
+    total = doc.page_count
+    if total <= 0:
+        return {"erro": "sem_paginas"}
+
+    metadata = doc.metadata or {}
+    titulo = (metadata.get("title") or "").strip() or derivar_titulo_do_nome(pdf_path)
+    autor = (metadata.get("author") or "").strip()
+    nativas = contar_nativas(doc, total)
+
+    return {
+        "titulo": titulo,
+        "autor": autor,
+        "paginas": total,
+        "tamanho_bytes": pdf_path.stat().st_size,
+        "nativas": nativas,
+        "escaneadas": total - nativas,
+    }
+
+
 def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[str], Path | None]:
     """Passo 1/2: percorre o PDF uma única vez (render+OCR por página),
     grava o texto bruto de cada página em cache_path (uma linha JSON por
@@ -805,6 +859,17 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
     total = doc.page_count
     matriz_zoom = pymupdf.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
     contador: Counter = Counter()
+
+    # Passagem rápida e independente da que segue (get_text só lê a
+    # camada de texto do PDF, sem renderizar nem chamar Tesseract — custo
+    # desprezível perto do OCR real abaixo). Serve só para a UI mostrar
+    # ao usuário, antes/durante o OCR, quantas páginas já têm texto
+    # nativo vs. quantas vão precisar de reconhecimento de imagem.
+    nativas = contar_nativas(doc, total)
+    print(
+        f'ANALISE:{{"total":{total},"nativas":{nativas},"escaneadas":{total - nativas},'
+        f'"tamanho_bytes":{pdf_path.stat().st_size}}}'
+    )
 
     print(f'PROGRESS:{{"fase":"ocr","atual":0,"total":{total}}}')
     capa_path = extrair_capa(doc, cache_path.parent)
@@ -1012,11 +1077,31 @@ def main() -> None:
         description="Foliant: PDF -> OCR -> HTML -> EPUB/AZW3, offline e em streaming"
     )
     parser.add_argument("pdf_entrada", type=Path)
-    parser.add_argument("saida", type=Path)
+    parser.add_argument("saida", type=Path, nargs="?", default=None)
     parser.add_argument("--lang", default="por")
     parser.add_argument("--titulo", default=None)
     parser.add_argument("--autor", default="Desconhecido")
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="Inspeção rápida (metadados + nativas/escaneadas), sem OCR. Não requer Tesseract/Calibre.",
+    )
     args = parser.parse_args()
+
+    if args.inspect:
+        # Sem check_dependencies(): a tela "antes de converter" não deve
+        # ficar bloqueada por Tesseract/Calibre ausentes, já que a
+        # inspeção não os usa — a checagem real continua acontecendo só
+        # quando o usuário confirma a conversão, mais abaixo.
+        dados = inspecionar_pdf(args.pdf_entrada)
+        if "erro" in dados:
+            print(f"INSPECAO_ERRO:{json.dumps(dados)}")
+        else:
+            print(f"INSPECAO:{json.dumps(dados)}")
+        sys.exit(0)
+
+    if args.saida is None:
+        parser.error("o argumento 'saida' é obrigatório fora do modo --inspect")
 
     check_dependencies()
     titulo = args.titulo or args.pdf_entrada.stem

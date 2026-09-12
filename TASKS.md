@@ -2127,3 +2127,142 @@ proveniência dessa decisão específica em nenhum documento do
 repositório; foi implementada com base na instrução direta do usuário
 nesta sessão, que já é autorização suficiente, mas o problema de
 rastreabilidade que a motivou fica registrado aqui para não se repetir.
+## Fase 4.14: máquina de estados por tela + inspeção rápida do PDF (2026-09-10)
+
+**Objetivo**: até aqui, `desktop/src/index.html`/`main.js` mostravam
+tudo numa página única, com seções alternando via atributo `hidden`.
+Esta fase reestrutura a exibição numa máquina de estados de 6 telas
+exclusivas (`selecionar` → `antes_de_converter` → `convertendo` →
+`pronto`/`com_ressalva`/`falha`), sem tocar na lógica já validada de
+progresso, cancelamento, updater e ações pós-conversão (Fases 4.6-4.13.1)
+— só reorganiza QUANDO/ONDE ela aparece. Acrescenta também um novo modo
+`--inspect` no backend, para popular a nova tela intermediária com dados
+reais do PDF (título, autor, páginas, nativas vs. escaneadas) antes do
+usuário confirmar a conversão.
+
+**Decisão de fluxo perguntada ao usuário antes de implementar**: ao
+clicar "Cancelar" durante `convertendo`, o app volta para
+`antes_de_converter` (mantém o arquivo selecionado e os dados já
+inspecionados, permitindo reconverter sem re-selecionar), não para
+`selecionar`.
+
+**Novo modo `--inspect` (`foliant.py`)**: inspeção rápida — metadados do
+PDF (`doc.metadata`, com fallback de título derivado do nome do arquivo
+via `derivar_titulo_do_nome`) + contagem nativas/escaneadas (função
+`contar_nativas`, extraída e compartilhada com `primeira_passada` para
+as duas nunca divergirem no critério de "nativa") — sem OCR, sem
+`check_dependencies()` (não precisa de Tesseract/Calibre só para
+inspecionar). Formato de saída: `INSPECAO:{json}` em sucesso,
+`INSPECAO_ERRO:{"erro":"criptografado"|"corrompido"|"sem_paginas"}` em
+falha esperada (PDF protegido por senha, corrompido ou sem páginas) —
+os dois casos saem com código 0 (são resultados, não crashes).
+`saida` virou `nargs="?"` no argparse (opcional só no modo `--inspect`;
+o fluxo normal de conversão valida que não é `None` antes de prosseguir,
+sem mudança de comportamento). Precisou de uma segunda entrada em
+`desktop/src-tauri/capabilities/default.json` (`shell:allow-spawn.allow`)
+para o shape `[caminho, "--inspect"]` — sem isso o Tauri bloqueia essa
+invocação do sidecar silenciosamente, por segurança.
+
+**Arquitetura da máquina de estados (`desktop/src/index.html`/`main.js`)**:
+cada estado é um `<template>` nativo; um único `<div id="tela">` recebe
+o conteúdo do estado atual via `telaEl.replaceChildren(template.content
+.cloneNode(true))` — o DOM do estado anterior é removido de verdade, não
+só escondido por CSS. Chrome persistente (fora de `#tela`, visível em
+toda tela): o selo "100% local" e o menu "Sobre". Toda transição passa
+por uma função única, `transicionarPara(nome)` — nunca um handler de
+evento chama um renderizador diretamente. Um contador global,
+`idInvocacaoAtual`, é incrementado a cada nova inspeção ou conversão
+disparada; cada callback assíncrono do sidecar (stdout/close/error)
+captura esse valor no início e o compara antes de tocar em DOM/estado —
+sem isso, um `close` tardio do processo (ex.: chega depois que
+"Cancelar" já navegou de volta para `antes_de_converter`) reescreveria a
+tela atual. Validado explicitamente no harness (ver abaixo): um `close`
+disparado de propósito numa invocação já superada não afeta a tela em
+exibição.
+
+**Correção de bug real** (drag-over): o texto do DropZone não mudava
+durante o arraste — só a borda do container reagia via
+`body.arrastando-arquivo`. Agora `#dropzone-titulo` muda para "Solte
+para começar" durante o `over` e reverte para "Arraste um PDF aqui" se
+o arquivo sair da área sem soltar.
+
+**Pendências explícitas, não esquecidas — bloqueiam uma Fase 4.15 de
+calibração**:
+- **Tempo estimado**: sem calibração real de tempo médio por página
+  (nativa vs. OCR, na máquina fraca que é a restrição central do
+  projeto), os textos correspondentes em `antes_de_converter` e
+  `convertendo` aparecem sem número ("Tempo estimado: calculando
+  conforme processa." / "Pode deixar rodando e usar o computador
+  normalmente." sem prefixo de tempo restante) — decisão temporária,
+  não um número inventado.
+- **`com_ressalva`**: implementada por completo (template + renderizador
+  `renderizarComRessalva`), mas **sem nenhum gatilho real** — nenhum
+  caminho do app chama `transicionarPara("com_ressalva")` hoje, porque
+  não existe threshold de confiança do Tesseract calibrado
+  (`image_to_data` já retorna `conf` por bloco, mas o valor de corte não
+  foi estimado). Pronta para ativação assim que a Fase 4.15 definir o
+  critério.
+
+  **Atualização (Fase 4.16)**: `com_ressalva` ganhou um gatilho real,
+  mas por um critério diferente do que este parágrafo antecipava — não
+  o threshold de confiança do Tesseract (isso continua pendente, ver
+  Fase 4.15 abaixo), e sim a mesma condição binária de "página sem
+  nenhum texto extraído" que motivou o fix do EPUB silenciosamente
+  vazio. As duas pendências continuam genuinamente distintas: tempo
+  estimado e threshold de confiança seguem em aberto.
+
+**Texto da tela `falha` ajustado para não prometer o que não existe**:
+confirmado por leitura de `foliant.py` (`main()`) que o
+`tempfile.TemporaryDirectory()` é destruído no cleanup do `with` mesmo
+em caso de cancelamento/erro — **não existe retomada real** de onde
+parou. O texto anterior planejado ("o Foliant retoma de onde parou")
+foi trocado por "Nada do que já foi processado é reaproveitado — a
+próxima tentativa recomeça do zero.", fiel ao comportamento confirmado.
+
+**Validação**:
+1. `foliant.py --inspect` rodado isoladamente contra
+   `samples/001-080.pdf` (sucesso, `INSPECAO:` com nativas=0/escaneadas=80,
+   igual ao já conhecido sobre esse sample) e contra um arquivo inválido
+   (`INSPECAO_ERRO:{"erro":"corrompido"}`, código 0 nos dois casos) —
+   antes de tocar em `main.js`.
+2. Harness headless novo (mesmo padrão de dependência zero das Fases
+   anteriores — só um servidor HTTP local + `importmap` remapeando os
+   módulos `@tauri-apps/*` para stubs controláveis, `main.js`/`index.html`
+   reais carregados sem nenhuma cópia/edição), rodado num Chrome real
+   headless via `puppeteer-core` (a única peça nova, instalada isolada
+   no diretório de scratchpad da sessão, fora do `package.json` do
+   projeto). 38 asserções cobrindo: transição completa `selecionar →
+   antes_de_converter → convertendo → pronto`; drag-over mudando/
+   revertendo o texto do DropZone; drop de arquivo não-PDF; skeleton de
+   "Analisando arquivo…" antes da inspeção resolver e população correta
+   das Tags/campos pré-preenchidos depois; args corretos enviados ao
+   sidecar em cada invocação (`--inspect` e conversão real, incluindo o
+   caminho de saída calculado via `documentDir()`/`join()`); cancelar
+   durante `convertendo` voltando para `antes_de_converter` com o
+   arquivo/inspeção cacheados (sem nova chamada a `--inspect`) e o aviso
+   transitório de cancelamento visível; guard de `idInvocacaoAtual`
+   confirmado na prática (um `close` disparado de propósito numa
+   invocação já superada não rouba a tela atual); fluxo de erro real
+   (`falha`) com o texto correto e sem promessa de retomada, e "Tentar de
+   novo" reaproveitando a inspeção cacheada; `INSPECAO_ERRO` (PDF
+   criptografado simulado) voltando para `selecionar` com aviso amigável;
+   "Converter outro PDF" limpando a sessão por completo (nenhum elemento
+   de `antes_de_converter` sobrevive no DOM depois do reset). Todas as 38
+   passaram.
+3. Build de produção real e instalação em `/Applications/Foliant.app`,
+   com autorização explícita do usuário — ver detalhes abaixo.
+
+**Risco residual aceito, mesmo padrão de sempre**: a limitação de
+Accessibility deste ambiente (documentada desde a Fase 4.11) impede
+capturar cliques reais na janela nativa. O harness desta fase valida a
+lógica real de `main.js`/`index.html` byte a byte (mesmos arquivos do
+bundle, sem stub de markup), mas não substitui o teste manual do usuário
+— em especial o drag-and-drop real do Finder (comportamento nativo não
+simulável fora do runtime do Tauri) e a temporização real do fluxo
+cancelar → tentar de novo → converter.
+
+**Fora de escopo, não tocado**: qualquer calibração de tempo real ou de
+threshold de confiança do Tesseract (é a Fase 4.15 em si, não esta
+tarefa); qualquer mudança de cor/tipografia/ícone além do já definido no
+design system (Fase 4.13/4.13.1).
+
