@@ -1019,7 +1019,7 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
 _RE_PROGRESSO_CALIBRE = re.compile(r"^(\d{1,3})%\s")
 
 
-def convert_to_ebook(html_path: Path, saida: Path, titulo: str, autor: str, capa_path: Path | None) -> None:
+def convert_to_ebook(html_path: Path, saida: Path, titulo: str, autor: str, capa_path: Path | None, lang: str) -> None:
     print(f"Compilando e-book final ({saida.suffix}) com Calibre...")
     cmd = [
         "ebook-convert",
@@ -1027,7 +1027,7 @@ def convert_to_ebook(html_path: Path, saida: Path, titulo: str, autor: str, capa
         str(saida),
         "--title", titulo,
         "--authors", autor,
-        "--language", "por",
+        "--language", lang,
         # TOC/sumário a partir dos títulos de capítulo detectados (Fase 3),
         # não mais uma entrada por página — só páginas com <h2> geram
         # entrada de sumário. Quebra de página continua em toda página
@@ -1139,7 +1139,7 @@ def main() -> None:
                 print('FALHA:{"motivo": "sem_texto_legivel"}')
                 sys.exit(1)
 
-            convert_to_ebook(html_path, args.saida, titulo=titulo, autor=args.autor, capa_path=capa_path)
+            convert_to_ebook(html_path, args.saida, titulo=titulo, autor=args.autor, capa_path=capa_path, lang=args.lang)
 
             if paginas_sem_texto:
                 print(f"RESSALVA:{json.dumps({'paginas_sem_texto': paginas_sem_texto})}")

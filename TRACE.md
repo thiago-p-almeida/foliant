@@ -943,3 +943,38 @@ confirmar, antes de testar, que o pipeline completo (`build:web` +
 `tauri build` + reinstalação) rodou após a última edição — não basta
 confirmar timestamp do `.app` (lição do ep. 5), é preciso confirmar que
 o timestamp é POSTERIOR à edição mais recente do código-fonte.
+
+---
+
+# Décimo episódio — metadado de idioma do EPUB dessincronizado do idioma real de OCR/conteúdo
+
+`convert_to_ebook()` passava `--language "por"` fixo ao Calibre desde o
+commit inicial do pipeline v2 (`9b2e43e`), independente do `--lang`
+recebido via CLI e já usado corretamente no Tesseract
+(`primeira_passada(..., lang=args.lang)`). Todo EPUB gerado — mesmo
+convertendo um PDF em espanhol ou inglês com `--lang spa`/`--lang eng`
+— declarava `<dc:language>por</dc:language>` no OPF, um metadado de
+acessibilidade incorreto (leitores de tela usam esse campo para regras
+de pronúncia/hifenização). Nunca percebido porque os testes anteriores
+sempre rodaram em português ou nunca inspecionaram o metadado do
+arquivo final gerado, só o conteúdo/HTML.
+
+Corrigido propagando `args.lang` até `convert_to_ebook()` (novo
+parâmetro `lang: str`, usado em `--language lang` em vez do literal).
+Formato confirmado com teste real do Calibre antes de aplicar a
+correção: o mesmo código ISO 639-2 que o `--lang` do Tesseract já usa
+(`por`, `spa`, `eng`, ...) é aceito nativamente por `--language`, sem
+tradução — `ebook-convert ... --language spa` produz
+`<dc:language>es</dc:language>` no OPF. Validado depois da correção
+com a fixture `tests/fixtures/ressalva_parcial.pdf` nos três casos
+(`spa`→`es`, `eng`→`en`, padrão sem flag→`pt`), sem regressão no
+fluxo comum em português.
+
+Distinto do problema já registrado em `ARCHITECTURE.md` (linhas
+2262-2273) sobre `<html lang="pt-BR">` fixo no `HTML_HEADER` — aquele é
+sobre o idioma do *conteúdo do livro* (ainda sem detecção automática,
+fora de escopo, permanece como risco residual conhecido); este era
+sobre o idioma do *motor de OCR* nunca chegando ao metadado do Calibre,
+um simples desacoplamento entre duas variáveis que já existiam no
+código, uma delas ligada corretamente e a outra hardcoded desde o
+início.
