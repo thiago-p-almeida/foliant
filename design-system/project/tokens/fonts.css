@@ -1,0 +1,5 @@
+/* Família única: Inter (SIL OFL), pesos 400/500/700.
+   No produto o self-host é obrigatório (Foliant roda 100% offline).
+   Aqui no design system a fonte vem da CDN do Google Fonts porque os
+   binários .woff2 não foram fornecidos — ver readme.md > Ressalvas. */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap");

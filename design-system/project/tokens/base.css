@@ -1,0 +1,7 @@
+html{background:var(--surface-app)}
+body{margin:0;background:var(--surface-app);color:var(--text-body-color);font:var(--text-body-weight) var(--text-body)/var(--text-body-line) var(--font-sans);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+*{box-sizing:border-box}
+a{color:var(--text-link);text-decoration:underline;text-underline-offset:2px}
+a:hover{color:var(--blue-700)}
+a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+code,pre{font-family:var(--font-mono)}

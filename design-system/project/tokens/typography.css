@@ -1,0 +1,16 @@
+:root{
+--font-sans:"Inter","Helvetica Neue",Arial,sans-serif;
+--font-mono:ui-monospace,"SF Mono",Menlo,monospace;
+
+/* Escala: tamanho / peso / linha. Nunca peso 300, nunca acima de 700. */
+--text-display:28px;--text-display-weight:700;--text-display-line:1.15;
+--text-heading:20px;--text-heading-weight:700;--text-heading-line:1.25;
+--text-body:17px;--text-body-weight:400;--text-body-line:1.6;
+--text-body-md:16px;--text-body-md-weight:500;--text-body-md-line:1.5;
+--text-caption:14px;--text-caption-weight:400;--text-caption-line:1.4;
+}
+.fo-display{font:var(--text-display-weight) var(--text-display)/var(--text-display-line) var(--font-sans);color:var(--text-title);margin:0}
+.fo-heading{font:var(--text-heading-weight) var(--text-heading)/var(--text-heading-line) var(--font-sans);color:var(--text-title);margin:0}
+.fo-body{font:var(--text-body-weight) var(--text-body)/var(--text-body-line) var(--font-sans);color:var(--text-body-color);margin:0}
+.fo-body-md{font:var(--text-body-md-weight) var(--text-body-md)/var(--text-body-md-line) var(--font-sans);color:var(--text-body-color);margin:0}
+.fo-caption{font:var(--text-caption-weight) var(--text-caption)/var(--text-caption-line) var(--font-sans);color:var(--text-muted);margin:0}

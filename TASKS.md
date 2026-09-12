@@ -1865,3 +1865,265 @@ permissões do SO (arquivos, rede, dispositivos) ou APIs nativas do
 Tauri sem equivalente fiel no stub precisa de confirmação manual real
 antes de ser considerada fechada, mesmo com testes headless 100%
 verdes.
+
+## Fase 4.13: aplicação do design system real ao app (2026-09-09)
+
+**Objetivo**: o design system do Foliant (paleta com 28 pares WCAG
+confirmados, tipografia, espaçamento, iconografia — ver
+`handoff-design-system/foliant-design-system/project/readme.md`)
+estava aprovado e provado funcional no standalone HTML, mas nunca tinha
+sido aplicado ao app real — `desktop/src/styles.css` ainda era o CSS
+padrão do template Tauri. Esta fase traduz os componentes React/JSX do
+handoff para HTML/CSS/JS vanilla em `desktop/src/`, sem alterar a
+lógica já validada (Fases 4.6-4.12).
+
+**Ativos extraídos de verdade** (não suposição — confirmado byte a
+byte):
+- **Ícones**: os 14 SVGs de `assets/icons/` do handoff vieram com
+  metadados C2PA embutidos (inflando cada ícone de ~300 bytes para
+  ~8KB — 112KB de metadado no total para 14 ícones triviais). Limpos
+  antes de copiar para `desktop/src/assets/icons/` (removido o bloco
+  `<metadata>` e o atributo `xmlns:c2pa`), preservando só o `<svg>`
+  funcional — total caiu para 4,4KB.
+- **Fonte Inter**: achado que muda a suposição original do meta-prompt
+  (que previa extrair 6 arquivos woff2 estáticos, 2 subsets × 3
+  pesos). O standalone HTML na verdade embute Inter como **fonte
+  variável** (eixo `wght` 100-900, confirmado via `fontTools`/`fvar`) —
+  um único arquivo cobre os pesos 400/500/700 usados pelo design
+  system. Extraído o subset "latin" (uuid
+  `1b8ae7ba-d3e3-4def-aab5-4d96573844b9` na tabela de blobs do
+  standalone, decodificado de base64 direto do manifest embutido),
+  confirmado cobrindo todos os caracteres acentuados do português
+  (ã õ ç á é í ó ú à â ê ô) via `cmap`. Uma limitação real: esse
+  subset não inclui U+2192 (→) — a copy foi escrita evitando esse
+  caractere (consistente com as regras de voz, que já preferem texto a
+  símbolos). Gravado em `desktop/src/assets/fonts/inter-variable.woff2`
+  (48KB), referenciado via `@font-face` local com
+  `font-weight: 100 900`.
+- Leftovers do template Tauri/Vite removidos:
+  `desktop/src/assets/{javascript,tauri}.svg` (nunca referenciados).
+
+**Decisões confirmadas com o usuário antes de implementar** (o
+meta-prompt pedia para sinalizar, não decidir sozinho):
+- Menu "Sobre" (com "Verificar atualizações" movido para dentro dele)
+  entra nesta fase.
+- Dark mode automático herdado do template Tauri é removido nesta
+  fase (design system não especifica variante escura; criar uma fica
+  para decisão futura).
+- Campo "Idioma do documento" **continua input de texto livre** — não
+  vira `SegmentedControl` (o design system mostra assim, mas trocar
+  mudaria comportamento JS, não só visual).
+- Só a linha "PDF de entrada" vira `DropZone` visual; "Salvar EPUB em"
+  continua `TextField`+botão (não é alvo de drag-and-drop).
+
+**Tradução de estrutura** (`desktop/src/index.html`, `styles.css`,
+`main.js`, `icons.js` novo): tokens completos de
+`handoff-design-system/.../tokens/*.css` viraram `:root` em
+`styles.css` (paleta, tipografia, espaçamento, elevação); `AppWindow`
+do handoff **não foi traduzido** (é moldura do UI kit, não componente
+de produto — a janela nativa do Tauri já cumpre esse papel); selo "100%
+local" fixo no topo; `ProgressPhase` mapeado 1:1 sobre as classes
+`.fase`/`.ativa`/`.concluida`/`.indeterminada` já existentes (só
+troca de cores/ícone, zero mudança de classe JS); bloco de sucesso e
+aviso viraram `Callout` (JS que monta o DOM de sucesso dinamicamente
+foi ajustado para incluir as classes/ícones certos — mudança de
+marcação, não de fluxo de controle); log e o novo "Sobre" viraram
+`Disclosure` (`<details>` nativo preservado, só chevron rotacionado via
+CSS); versão do app exibida no "Sobre" via `getVersion()` do
+`@tauri-apps/api/app` (pequena adição justificada, não fazia sentido
+um menu "Sobre" sem versão).
+
+**Copy revisada contra as regras de voz** (grep real encontrou 4
+violações, todas corrigidas): subtítulo "PDF → OCR → EPUB" →
+"Converte um PDF escaneado em um livro digital."; texto de ajuda do
+idioma perdeu o `(OCR)` final; label da fase "OCR + análise" →
+"Reconhecendo o texto"; label "Compilação EPUB" → "Fechando o EPUB".
+A constante `NOMES_FASE` em `main.js` (nunca lida em nenhum outro
+lugar do arquivo, confirmado por grep) foi removida por ser código
+morto, não atualizada.
+
+**Bug real encontrado e corrigido durante a validação visual**: as
+novas regras `button { display: inline-flex }`, `.callout { display:
+flex }` e `.progresso { display: flex }` são regras de autor e por
+isso venciam o `[hidden]` do user-agent stylesheet mesmo com
+especificidade menor (autor sempre vence UA, independente de
+especificidade) — o botão "Cancelar", o painel de progresso, o banner
+de sucesso e o de aviso apareciam mesmo com o atributo `hidden`
+presente. Corrigido com uma regra `[hidden] { display: none !important;
+}` em `styles.css`. Só foi pego porque a validação renderizou o HTML de
+verdade em vez de só ler o CSS.
+
+**Validação**:
+- `pnpm tauri dev`: compilou e rodou sem erros (Rust + `beforeDevCommand`).
+  **Limitação real deste ambiente, já documentada desde a Fase 4.11**:
+  a janela nativa não é capturável por `screencapture` aqui mesmo
+  confirmando via Accessibility que ela existe, está visível e não
+  minimizada (mesma causa raiz de sempre — sandboxing de Accessibility,
+  não um bug do app). Substituído pela mesma técnica já aceita no
+  projeto: os arquivos reais do bundle (`index.html`/`styles.css`,
+  byte a byte, servidos por um HTTP server local) renderizados em
+  Chrome headless real — confirmados visualmente: estado ocioso,
+  `DropZone` em drag-over, `ProgressPhase` (concluído/ativo/
+  indeterminado), `Callout` de sucesso e de aviso, `Disclosure` aberta
+  (log + Sobre, chevron rotacionado), fonte Inter carregando do arquivo
+  local (não fallback do sistema).
+- Build de produção real (`pnpm tauri build`), assinado com a chave
+  real do updater (senha fornecida pelo usuário nesta sessão, nunca
+  persistida em arquivo) — mesmo processo da Fase 4.10.
+  `desktop/dist/` verificado por timestamp e grep (`callout-sucesso`,
+  "Arraste um PDF", "100% local", "Fechando o EPUB" presentes) antes de
+  tocar em `/Applications`.
+- `/Applications/Foliant.app` antigo removido e o novo instalado, com
+  autorização explícita do usuário antes da ação destrutiva. Confirmado
+  por timestamp que o binário instalado é posterior a todas as
+  mudanças desta fase.
+- Smoke test real: conversão completa do `samples/001-080.pdf` via
+  `/Applications/Foliant.app/Contents/MacOS/foliant-core` invocado
+  diretamente (mesma técnica das fases anteriores) — EPUB de 810.650
+  bytes gerado com sucesso (TOC com 8 entradas, sem erros), confirmando
+  que o pipeline de conversão (não tocado nesta fase) continua
+  funcional depois da repintura visual completa.
+
+**Risco residual aceito**: mesma limitação de sempre — nenhuma
+interação (clique, drag-and-drop de verdade) foi testada na janela
+nativa por causa da restrição de Accessibility deste ambiente. A
+validação visual desta fase cobriu o HTML/CSS real renderizado
+(confirma que a marcação e os estilos estão corretos) e a lógica de
+conversão real (confirma que nada quebrou por trás), mas não cobre a
+combinação dos dois — cliques reais nos novos botões/disclosures no
+app instalado. Recomendado um teste manual rápido do usuário,
+especialmente o "Sobre" (novo) e o `DropZone` (mudança de contêiner
+visual sobre um alvo de drag-and-drop que já funcionava).
+
+**Pendência explícita**: o contraste do anel de foco (`--ring-focus`,
+`rgba(58,115,181,.45)` sobre `--focus-ring` `--blue-600`) faz parte da
+paleta já validada computacionalmente (28 pares WCAG). O readme do
+design system registra que essa validação é só computacional, não em
+campo (tablet real, luz real) — ressalva pré-existente, não uma
+pendência nova desta fase.
+
+**Fora de escopo, não tocado**: dark mode (variante escura nova, só a
+remoção do herdado foi feita); ícones/telas fora do subset atual;
+qualquer mudança de comportamento de OCR/heurística de texto;
+`SegmentedControl` para idioma; `DropZone` para "Salvar EPUB em"
+(decisões explícitas, ver acima).
+
+## Fase 4.13.1: completar a granularidade da tradução do design system (2026-09-10)
+
+**Causa raiz real, confirmada por auditoria (pedida pelo usuário logo
+após o teste manual da Fase 4.13)**: a Fase 4.13 traduziu a base do
+design system (tokens, ícones, fonte, `Button`/`Callout`/
+`ProgressPhase`/`Disclosure`), mas ficou incompleta em 8 pontos — não
+por decisão registrada, e sim por dois problemas de processo
+concretos, ambos confirmados com evidência (não suposição):
+
+1. **Perda de informação entre pesquisa e plano final.** O agente de
+   exploração da Fase 4.13 já tinha reportado, por escrito, que
+   `ScreensConvert.jsx` envolve Título/Autor/Idioma num `Disclosure`
+   ("Ajustar título e autor do livro") — mas ao escrever o plano final
+   isso foi comprimido junto com a decisão (essa sim perguntada ao
+   usuário) de manter Idioma como campo de texto livre, e a parte do
+   `Disclosure` se perdeu no meio, sem nunca virar pergunta.
+2. **Validação que só cobriu o caminho feliz.** O build de produção e
+   o smoke test da Fase 4.13 rodaram só uma conversão bem-sucedida —
+   nunca cancelamento nem erro real — então o gap de `main.js` só
+   fazer `log(...)` nesses dois casos (em vez de um `Callout` visível,
+   como já acontecia em sucesso) não tinha como aparecer antes do
+   teste manual do usuário.
+
+Auditoria completa (pedida explicitamente pelo usuário, "não assumir
+que os 3 pontos são os únicos") comparou as 7 telas do handoff
+(`ui_kits/foliant-app/{ScreensStart,ScreensConvert,ScreensResult}.jsx`)
+contra `desktop/src/` linha a linha — achou 5 lacunas adicionais além
+das 3 relatadas pelo usuário, e mais 2 que pareciam exigir dado novo do
+backend mas na verdade já existiam, computados e descartados dentro do
+pipeline sem nunca serem expostos. **Confirmado com o usuário, com 2
+perguntas de escopo separadas, quais entravam nesta fase.**
+
+**Os 10 itens desta fase** (Título/Autor em `Disclosure` real;
+`Callout` de cancelamento; aviso de arquivo inválido reposicionado
+para perto do DropZone; `Callout` de erro real de conversão com
+"Tentar de novo"; `Callout` de status ao vivo durante a fase OCR,
+reaproveitando `atual`/`total` que já chegava via `PROGRESS:`; Card de
+reforço "100% no seu computador"; Card "Como levar para o aparelho"
+com seletor de 3 dispositivos; botão "Converter outro PDF"; `FileSummary`
+com contagem real de páginas; `Tag`s com contagem real
+texto-vs-escaneado) — todos implementados reaproveitando os padrões
+visuais/CSS já validados na Fase 4.13, sem token novo.
+
+**Mudança real de backend, não só tradução de UI** (itens de
+contagem/Tags): confirmado lendo `foliant.py` que `extrair_texto_pagina`
+(linha 657, `pagina.get_text("text").strip()`) já decide por página se
+é texto nativo ou precisa de OCR, e `doc.page_count` já dá o total —
+mas nenhum dos dois nunca tinha sido somado nem exposto para a UI.
+Adicionada uma passagem rápida e independente da que já existe, logo
+no início de `primeira_passada()` (antes do loop de OCR, que não
+mudou): `pagina.get_text("text")` só lê a camada de texto do PDF, não
+renderiza nem chama Tesseract, então o custo é desprezível perto do
+OCR real que vem a seguir. Emite uma nova linha estruturada
+`ANALISE:{"total":...,"nativas":...,"escaneadas":...,"tamanho_bytes":...}`,
+consumida por um novo ramo em `processarLinha()` (`main.js`), ao lado
+do `PROGRESS:` que já existia.
+
+**Dois itens ficaram fora de escopo, por decisão explícita do
+usuário**: tempo estimado ("~35 min", "faltam ~19 min") e a variante
+"sucesso com ressalva" (percentual de páginas com problema). Ambos
+exigem calibração real contra dados (tempo médio por página nativa vs.
+OCR na máquina fraca que é a restrição central do projeto; threshold de
+confiança do Tesseract — `image_to_data` já retorna `conf` por bloco,
+mas o valor de corte não pode ser estimado de cabeça). O usuário pediu
+para abrir uma fase própria de calibração (**Fase 4.15**, ainda não
+iniciada) em vez de estimar esses números aqui.
+
+**Validação, em 3 camadas** (mais rigorosa que a da Fase 4.13, que só
+tinha checado renderização estática):
+1. **Lógica JS real, não só visual**: um harness com `importmap`
+   remapeando os imports do Tauri (`@tauri-apps/...`) para stubs locais
+   permitiu carregar `main.js` de verdade num Chrome headless e
+   executar os handlers reais — confirmado por execução (não inspeção
+   de código) que: clicar num botão do seletor de dispositivo troca a
+   lista de passos certa; disparar uma linha `ANALISE:` sintética
+   preenche as `Tag`s do `FileSummary` com os números certos; disparar
+   `PROGRESS:` preenche o `Callout` de status ao vivo; fechar o
+   processo com código 1 mostra o `Callout` de erro e reabilita o
+   botão Converter; fechar o processo com código 1 **depois** de clicar
+   Cancelar mostra o `Callout` de cancelamento, não o de erro (o guard
+   `cancelamentoSolicitado` funciona).
+2. **Backend real**: `foliant.py` (fonte) rodado contra
+   `samples/001-080.pdf` — `ANALISE:{"total":80,"nativas":0,"escaneadas":80,...}`
+   correto (livro 100% escaneado, bate com o que já era sabido sobre
+   esse sample), EPUB de 810.350 bytes gerado sem erro.
+   `foliant-core` (binário PyInstaller reconstruído via
+   `scripts/build-sidecar.sh`) rodado contra o mesmo sample depois de
+   empacotado no `.app` — mesma linha `ANALISE:` correta, EPUB de
+   810.499 bytes, sem erro.
+3. **Build de produção completo**: sidecar Python reconstruído (mudou
+   `foliant.py`), `pnpm tauri build` com a chave real do updater,
+   `dist/` verificado (grep confirmando `resumo-arquivo`,
+   `cartao-reforco`, "Ajustar título e autor", `pos-sucesso`,
+   `segmentado`, `ANALISE:`, `mostrarGuiaAparelho`, `circle-alert` no
+   bundle gerado) antes de instalar.
+   `/Applications/Foliant.app` reinstalado com autorização explícita
+   do usuário antes da ação destrutiva, timestamp confirmado.
+
+**Risco residual aceito, mesmo padrão de sempre**: a limitação de
+Accessibility deste ambiente (documentada desde a Fase 4.11) impediu
+de novo qualquer captura da janela nativa real — nem a Fase 4.13 nem
+esta conseguiram confirmar visualmente na janela de verdade. O que
+esta fase adiciona sobre a 4.13 é a camada 1 acima (execução real da
+lógica JS, não só leitura de código), que reduz bastante o risco de um
+handler quebrado silenciosamente — mas não substitui clique real do
+usuário nos 3 estados que motivaram a auditoria (Disclosure
+expandido, cancelamento, arquivo inválido perto do DropZone).
+Recomendado o mesmo teste manual rápido já pedido na Fase 4.12.
+
+**Lição de processo, registrada a pedido explícito do usuário**:
+decisões de UI combinadas em conversa (como o reposicionamento do
+aviso de arquivo inválido, que o usuário confirmou ser uma decisão já
+tomada antes desta sessão) devem ser escritas aqui ou em
+`ARCHITECTURE.md` no momento em que são tomadas — não ficar só no
+histórico do chat. Esta auditoria não conseguiu confirmar a
+proveniência dessa decisão específica em nenhum documento do
+repositório; foi implementada com base na instrução direta do usuário
+nesta sessão, que já é autorização suficiente, mas o problema de
+rastreabilidade que a motivou fica registrado aqui para não se repetir.

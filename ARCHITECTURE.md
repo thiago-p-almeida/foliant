@@ -2928,3 +2928,109 @@ drag-and-drop) só apareceram na validação manual real, não no harness
 headless — reforça que qualquer mudança envolvendo permissões do SO ou
 API nativa sem stub fiel precisa de confirmação manual, mesmo com
 testes headless 100% verdes.
+
+## Fase 4.13: design system real aplicado ao app (`desktop/src`)
+
+Evidência completa em `TASKS.md`, Fase 4.13. Aqui, só as decisões
+técnicas não óbvias.
+
+**Fonte Inter é variável, não estática — muda a extração prevista**: a
+suposição inicial (herdada do meta-prompt desta fase) era extrair 6
+arquivos woff2 estáticos (2 subsets × 3 pesos) do standalone HTML. A
+inspeção real do manifest de blobs embutido no standalone mostrou que
+os 7 uuids de fonte ali (um por subset Unicode do Google Fonts) são
+reutilizados **idênticos** nas 21 regras `@font-face` (7 subsets × 3
+pesos — mesmo uuid do subset em `font-weight: 400`, `500` e `700`).
+Isso só faz sentido se o arquivo por trás de cada uuid for uma fonte
+variável (eixo `wght`) — confirmado abrindo o arquivo decodificado com
+`fontTools`: `fvar` presente, eixo `wght` 100-900. Resultado prático: 1
+arquivo (`inter-variable.woff2`, subset "latin", 48KB) cobre os 3 pesos
+usados pelo design system, via um único `@font-face` com
+`font-weight: 100 900` — mais simples e mais leve que os 6 arquivos
+originalmente previstos.
+
+**`AppWindow` do handoff não foi traduzido para o app real**: o próprio
+`.prompt.md` do componente é explícito — é a moldura do UI kit para
+apresentar as 8 telas lado a lado, não um componente de produto
+("não é um componente de produto, é o enquadramento do UI kit"). A
+janela nativa do Tauri já fornece titlebar/bordas; recriar isso como
+chrome falso dentro do WebView teria duplicado o que o SO já desenha.
+
+**Bug de `[hidden]` sobrescrito por `display: flex`/`inline-flex`**:
+regras de autor sempre vencem o user-agent stylesheet, independente de
+especificidade — então `button { display: inline-flex }` e
+`.callout`/`.progresso { display: flex }` faziam o botão "Cancelar", o
+painel de progresso e os banners de sucesso/aviso ficarem visíveis
+mesmo com o atributo `hidden` presente (usado por `main.js` para
+controlar visibilidade). Corrigido com `[hidden] { display: none
+!important; }`. Só foi pego porque a validação renderizou o HTML real
+em vez de revisar o CSS isoladamente — reforça, de outro ângulo, a
+mesma lição das Fases 4.10-4.12: renderizar/executar de verdade
+encontra bugs que a leitura de código não encontra.
+
+**Mesma limitação de Accessibility de sempre, reconfirmada**: a janela
+nativa do app (dev e produção) não é capturável por `screencapture`
+neste ambiente, mesmo com a API de Accessibility confirmando que ela
+existe, está visível, não minimizada e é a app frontmost — não é bug do
+app, é a mesma restrição de sandboxing documentada desde a Fase 4.11.
+Contornado renderizando os arquivos reais do bundle (`dist/index.html`
+e `dist/styles.css`, antes do build embutir no binário) em Chrome
+headless real, servidos por um HTTP server local — valida marcação e
+CSS de verdade, mas não substitui clique real na janela nativa (mesmo
+risco residual já aceito em fases anteriores).
+
+## Fase 4.13.1: completar a tradução do design system + harness de execução real
+
+Evidência completa em `TASKS.md`, Fase 4.13.1. Aqui, só as decisões
+técnicas não óbvias.
+
+**Por que a auditoria achou 8 lacunas em vez das 3 relatadas pelo
+usuário**: comparação linha a linha entre `foliant.py`/`desktop/src/`
+reais e os 3 arquivos de composição do handoff
+(`ui_kits/foliant-app/{ScreensStart,ScreensConvert,ScreensResult}.jsx`)
+— não os componentes isolados (`components/*.jsx`), que já tinham sido
+lidos na Fase 4.13. A causa raiz de duas lacunas concretas, achadas
+assim: (1) `ScreensConvert.jsx` envolve Título/Autor/Idioma num
+`Disclosure` — informação que o próprio agente de exploração da Fase
+4.13 já tinha reportado, mas que se perdeu na compressão do plano
+final; (2) `main.js` só logava cancelamento/erro em texto, nunca com
+`Callout` visível — só apareceu porque a validação da Fase 4.13 nunca
+exercitou esses dois caminhos (só rodou uma conversão bem-sucedida).
+
+**Descoberta real durante a auditoria**: dois itens que pareciam
+exigir funcionalidade nova de backend (contagem de páginas e
+classificação texto-vs-escaneado) na verdade já eram computados dentro
+do pipeline e descartados sem nunca serem expostos —
+`extrair_texto_pagina()` (`foliant.py:657`) já decide por página via
+`pagina.get_text("text").strip()`, e `doc.page_count` já dá o total
+antes de qualquer processamento. A mudança real foi só instrumentação
+(uma passagem adicional e independente, rápida por não envolver
+renderização/OCR, emitindo uma linha `ANALISE:` nova), não uma feature
+nova de análise. Os outros dois itens que pareciam parecidos (tempo
+estimado, threshold de confiança do Tesseract para "sucesso com
+ressalva") são genuinamente diferentes — exigem calibração contra
+dados reais, não só exposição de um valor já calculado — e foram
+propositalmente adiados para uma Fase 4.15 à parte, por decisão
+explícita do usuário.
+
+**Harness de execução real via `importmap`, não só leitura de
+código**: a Fase 4.13 só validou HTML/CSS estático em Chrome headless
+(os imports do Tauri em `main.js` — `@tauri-apps/plugin-shell` etc. —
+são specifiers nus que o navegador não resolve, então o módulo inteiro
+falhava ao carregar e nenhum handler JS rodava). Esta fase contornou
+isso com um `<script type="importmap">` remapeando esses specifiers
+para um módulo stub local — `main.js` real passa a carregar e executar
+de verdade no navegador, sem precisar copiar ou modificar o arquivo.
+O stub do `Command.sidecar()` guarda o callback de `stdout.on("data",
+cb)` num global (`window.__dispararStdout`), permitindo ao script de
+teste simular linhas de stdout (`ANALISE:`/`PROGRESS:`) e ao de
+`close` (`window.__fecharProcesso`) simular o processo terminando —
+validando por execução real que o guard `cancelamentoSolicitado`
+escolhe o `Callout` certo (cancelado, não erro) mesmo quando o
+processo cancelado también sai com código != 0, exatamente a mesma
+ambiguidade que a Fase 4.7 já tinha documentado ("não existe evento
+distinto de cancelado vindo do sidecar"). Esse padrão de harness (sem
+nenhuma dependência nova instalada, só um arquivo stub + importmap) é
+reaproveitável para validação de lógica JS em fases futuras, sem
+esperar acesso à janela nativa.
+

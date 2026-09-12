@@ -1,0 +1,186 @@
+<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Foliant — Design System</title>
+<template id="__bundler_thumbnail"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#1E4D8C"/><text x="50" y="50" fill="#FAF7F2" font-family="Inter,sans-serif" font-size="46" font-weight="700" text-anchor="middle" dominant-baseline="central">F</text></svg></template>
+<link rel="stylesheet" href="styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="_ds_bundle.js"></script>
+<style>
+body{margin:0}
+.wrap{max-width:1040px;margin:0 auto;padding:48px 24px 96px;display:flex;flex-direction:column;gap:48px}
+header{display:flex;flex-direction:column;gap:12px}
+h1{margin:0;font:700 44px/1.05 var(--font-sans);letter-spacing:-.02em;color:var(--blue-900)}
+.lede{max-width:64ch}
+section{display:flex;flex-direction:column;gap:16px;border-top:1px solid var(--gray-300);padding-top:24px}
+h2{margin:0;font:700 var(--text-heading)/var(--text-heading-line) var(--font-sans);color:var(--gray-800)}
+.sub{margin:0;font:400 var(--text-caption)/1.4 var(--font-sans);color:var(--gray-500);max-width:70ch}
+.sw{display:flex;gap:8px;flex-wrap:wrap}
+.chip{width:124px;border:1px solid var(--gray-300);border-radius:var(--radius-sm);overflow:hidden;background:var(--white)}
+.chip .b{height:52px}
+.chip .t{padding:6px 8px;font:400 11px/1.35 var(--font-sans);color:var(--gray-700)}
+.chip .t b{display:block;font-weight:500;color:var(--gray-800)}
+.chip .t code{font-size:10px;color:var(--gray-500)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.iconrow{display:flex;flex-wrap:wrap;gap:14px}
+.ico{width:66px;text-align:center}
+.ico svg{color:var(--blue-800)}
+.ico code{display:block;font:400 9px var(--font-sans);color:var(--gray-500);margin-top:4px}
+.do{padding:12px;background:var(--green-100);border:1px solid var(--green-700);border-radius:8px}
+.dont{padding:12px;background:var(--red-100);border:1px solid var(--red-700);border-radius:8px}
+.do b{color:var(--green-700)}.dont b{color:var(--red-700)}
+.do ul,.dont ul{margin:8px 0 0;padding-left:18px;font:400 14px/1.7 var(--font-sans);color:var(--gray-700)}
+#nav{display:flex;gap:6px;flex-wrap:wrap}
+#nav button{min-height:32px;padding:0 10px;border-radius:var(--radius-sm);border:1px solid var(--gray-300);background:var(--white);color:var(--gray-700);font:500 13px var(--font-sans);cursor:pointer}
+#nav button[aria-current="true"]{background:var(--blue-800);border-color:var(--blue-800);color:var(--white)}
+.kit{display:flex;flex-direction:column;align-items:center;gap:16px}
+footer{font:400 var(--text-caption)/1.6 var(--font-sans);color:var(--gray-500);max-width:70ch}
+</style></head><body>
+<div class="wrap">
+<header>
+<h1>Foliant</h1>
+<p class="fo-body lede">Design system do app que converte PDFs grandes ou escaneados em EPUB, 100% no computador do usuário. Azul de confiança, neutros quentes, verde só para progresso, uma ação principal por tela e zero jargão técnico na interface.</p>
+</header>
+
+<section>
+<h2>Cor</h2>
+<p class="sub">Primária azul (confiança), secundária em neutros quentes (humano), verde exclusivo de progresso/confirmação, âmbar para rotina do sistema e vermelho dessaturado só para falha real. 28 pares validados em WCAG 2.2 AA, 0 falhas.</p>
+<div class="sw" id="sw-blue"></div>
+<div class="sw" id="sw-neutral"></div>
+<div class="sw" id="sw-semantic"></div>
+</section>
+
+<section>
+<h2>Tipografia</h2>
+<p class="sub">Uma família só: Inter, pesos 400/500/700. Corpo em 17px porque a persona estuda por horas seguidas; legenda de 14px é o piso do sistema.</p>
+<p class="fo-display">Pronto. Seu livro está convertido.</p>
+<p class="fo-heading">O que vai acontecer</p>
+<p class="fo-body" style="max-width:60ch">41 páginas já têm texto de verdade. As outras 862 são imagem escaneada — o Foliant vai reconhecer o texto delas letra por letra.</p>
+<p class="fo-body-md">Converter para EPUB</p>
+<p class="fo-caption">É o nome que vai aparecer na estante do seu aparelho.</p>
+</section>
+
+<section>
+<h2>Espaçamento, raios e toque</h2>
+<p class="sub">Escala 4/8/12/16/24/32/48. Raios 4px (input, tag), 8px (card, botão), 12px (drop, modal). Ícone de 24px dentro de alvo de 44px — o aparelho dominante da persona é tablet.</p>
+<div class="row" id="scale"></div>
+<div class="row">
+<div style="width:150px;height:74px;background:var(--white);border:1px solid var(--gray-300);border-radius:4px;display:grid;place-items:center;font:400 12px var(--font-sans);color:var(--gray-700)">4px · input, tag</div>
+<div style="width:150px;height:74px;background:var(--beige);border:1px solid var(--gray-300);border-radius:8px;display:grid;place-items:center;font:400 12px var(--font-sans);color:var(--gray-700)">8px · card, botão</div>
+<div style="width:176px;height:74px;background:var(--beige-200);border:2px dashed var(--gray-300);border-radius:12px;display:grid;place-items:center;font:400 12px var(--font-sans);color:var(--gray-700)">12px · drop, modal</div>
+<div style="width:44px;height:44px;border:1px dashed var(--blue-600);border-radius:8px;display:grid;place-items:center"><div style="width:24px;height:24px;background:var(--blue-800);border-radius:3px"></div></div>
+</div>
+</section>
+
+<section>
+<h2>Iconografia</h2>
+<p class="sub">Lucide, traço 2px, sempre linha — nunca preenchido, nunca emoji. <code>info</code> na tela do Gatekeeper, nunca <code>alert-triangle</code>.</p>
+<div class="iconrow" id="icons"></div>
+</section>
+
+<section>
+<h2>Componentes</h2>
+<p class="sub">Catorze primitivos derivados das telas reais do app: ação, superfície, entrada, feedback e moldura.</p>
+<div id="components"></div>
+</section>
+
+<section>
+<h2>Tom de voz</h2>
+<p class="sub">70% casual / 30% formal, voz ativa, português do Brasil, sem jargão e sem pedido de desculpas.</p>
+<div class="grid2">
+<div class="do"><b>Faça</b><ul><li>"Vamos converter seu PDF"</li><li>"Reconhecer o texto das páginas escaneadas"</li><li>"Página 47 de 312"</li><li>"Isso é normal na primeira abertura"</li></ul></div>
+<div class="dont"><b>Não faça</b><ul><li>"OCR", "bounding box", "stderr"</li><li>"O arquivo foi processado"</li><li>"Contornar o bloqueio do macOS"</li><li>"Desculpe, algo deu errado"</li></ul></div>
+</div>
+</section>
+
+<section>
+<h2>App desktop — fluxo completo</h2>
+<p class="sub">Instalação, seleção, pré-conversão, conversão, resultado, ressalva e falha. Os controles funcionam.</p>
+<div id="kit" class="kit"></div>
+</section>
+
+<footer>
+Fontes: documento consolidado de design (paleta, tipografia, matriz de contraste), wireframe anotado das 8 telas e o repositório <a href="https://github.com/thiago-p-almeida/foliant">github.com/thiago-p-almeida/foliant</a>. Nenhum arquivo de logo existe nas fontes: a marca é a palavra em Inter 700. Inter e Lucide são carregados de CDN aqui; no produto, self-host obrigatório.
+</footer>
+</div>
+
+<script type="text/babel" src="ui_kits/foliant-app/ScreensStart.jsx"></script>
+<script type="text/babel" src="ui_kits/foliant-app/ScreensConvert.jsx"></script>
+<script type="text/babel" src="ui_kits/foliant-app/ScreensResult.jsx"></script>
+<script type="text/babel">
+const DS = window.FoliantDesignSystem_b90fff;
+const { Button, Card, Tag, Icon, TextField, SegmentedControl, Checkbox, Disclosure, DropZone, LocalBadge, Callout, ProgressPhase, FileSummary } = DS;
+
+const chip = (n,h,r)=>`<div class="chip"><div class="b" style="background:${h}"></div><div class="t"><b>${n}</b><code>${h}</code><div>${r}</div></div></div>`;
+document.getElementById('sw-blue').innerHTML = [['--blue-900','#15375F','Header, selo'],['--blue-800','#1E4D8C','Marca, botão, link'],['--blue-700','#2A609E','Hover/press'],['--blue-600','#3A73B5','Foco'],['--blue-100','#E4ECF5','Tint']].map(a=>chip(...a)).join('');
+document.getElementById('sw-neutral').innerHTML = [['--warm-white','#FAF7F2','Fundo do app'],['--beige','#F2EBE0','Card'],['--beige-200','#EAE0D0','Card em card'],['--gray-800','#2A2520','Título'],['--gray-700','#3A3530','Corpo'],['--gray-500','#6B6258','Secundário'],['--gray-300','#897A60','Borda']].map(a=>chip(...a)).join('');
+document.getElementById('sw-semantic').innerHTML = [['--green-700','#226640','Sucesso'],['--green-600','#24663C','Barra'],['--green-100','#E5F0E9','Card de sucesso'],['--amber-700','#8A5A1F','Aviso do sistema'],['--amber-100','#F7EFD9','Card de aviso'],['--red-700','#9B3636','Falha real'],['--red-100','#F6E4E4','Card de erro']].map(a=>chip(...a)).join('');
+document.getElementById('scale').innerHTML = [4,8,12,16,24,32,48].map(n=>`<div style="text-align:center"><div style="width:${n}px;height:${n}px;background:var(--blue-800);border-radius:2px"></div><code style="font:400 10px var(--font-sans);color:var(--gray-500);display:block;margin-top:6px">${n}</code></div>`).join('');
+const ICON_NAMES = ['file-text','shield-check','circle-check','circle-alert','info','folder-open','download','book-open','chevron-down','check','x','tablet','clock','hard-drive'];
+ReactDOM.createRoot(document.getElementById('icons')).render(
+  <>{ICON_NAMES.map(n=>
+    <div className="ico" key={n}><Icon name={n} size={24} color="var(--blue-800)" /><code>{n}</code></div>)}</>);
+
+ReactDOM.createRoot(document.getElementById('components')).render(
+<div style={{display:'flex',flexDirection:'column',gap:24}}>
+  <div className="row">
+    <Button variant="primary">Converter para EPUB</Button>
+    <Button variant="secondary" icon="folder-open">Selecionar arquivo…</Button>
+    <Button variant="ghost" size="sm">Trocar</Button>
+    <Button variant="success" icon="book-open">Abrir EPUB</Button>
+    <Button variant="primary" disabled>Converter</Button>
+  </div>
+  <div className="row">
+    <LocalBadge />
+    <Tag tone="brand">41 páginas com texto</Tag>
+    <Tag tone="warning" icon="info">862 escaneadas</Tag>
+    <Tag tone="success" icon="check">Concluído</Tag>
+    <Tag tone="error">Falhou</Tag>
+    <Tag tone="neutral">~35 min</Tag>
+  </div>
+  <FileSummary name="apostila-direito-adm.pdf" meta="903 páginas · 108 MB" action={<Button variant="ghost" size="sm">Trocar</Button>} />
+  <div className="grid2">
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      <TextField label="Título" placeholder="apostila-direito-adm" help="É o nome que vai aparecer na estante do seu aparelho." />
+      <SegmentedControl label="Idioma do livro" options={["Português","Inglês","Espanhol"]} />
+      <Checkbox label="Continua tudo no seu computador" help="Nenhum arquivo é enviado para a internet." checked />
+      <Disclosure summary="Ajustar título e autor do livro"><TextField label="Autor" placeholder="Desconhecido" /></Disclosure>
+    </div>
+    <DropZone action={<Button variant="secondary">Selecionar arquivo…</Button>} note="Aceita PDF de qualquer tamanho — inclusive apostilas de centenas de MB." />
+  </div>
+  <div className="grid2">
+    <Callout tone="warning" title="Isso é normal na primeira abertura">O macOS avisa que não conhece o desenvolvedor. Clique com o botão direito no Foliant e escolha Abrir.</Callout>
+    <Callout tone="success" title="Pronto. Seu livro está convertido.">903 páginas, com texto pesquisável e fonte ajustável.</Callout>
+    <Callout tone="error" title="A conversão parou na página 214." actions={<Button variant="primary" size="sm">Tentar de novo</Button>}>O PDF parece estar danificado nessa página.</Callout>
+    <Callout tone="info" title="Uma ressalva">61 das 903 páginas estavam tortas ou muito claras no original.</Callout>
+  </div>
+  <div style={{display:'flex',flexDirection:'column',gap:16,maxWidth:520}}>
+    <ProgressPhase label="Lendo as páginas" counter="473 de 903" percent={52} state="active" />
+    <ProgressPhase label="Montando o livro" state="active" indeterminate />
+    <ProgressPhase label="Fechando o EPUB" state="pending" />
+  </div>
+  <div className="row">
+    <Card surface="card" style={{flex:1}}><span className="fo-caption">surface="card"</span></Card>
+    <Card surface="sunken" style={{flex:1}}><span className="fo-caption">surface="sunken"</span></Card>
+    <Card surface="plain" style={{flex:1}}><span className="fo-caption">surface="plain"</span></Card>
+    <Card surface="brandTint" style={{flex:1}}><span className="fo-caption">surface="brandTint"</span></Card>
+  </div>
+</div>);
+
+const steps = ["Instalação","Selecionar","Antes de converter","Convertendo","Pronto","Com ressalva","Falha"];
+function Kit(){
+  const [step,setStep] = React.useState(1);
+  const go = (n) => () => setStep(n);
+  const screen = [
+    <window.GatekeeperScreen onNext={go(1)} />,
+    <window.SelectScreen onNext={go(2)} />,
+    <window.PreviewScreen onNext={go(3)} onBack={go(1)} />,
+    <window.ConvertingScreen onNext={go(4)} onError={go(6)} />,
+    <window.SuccessScreen onRestart={go(1)} />,
+    <window.SuccessScreen onRestart={go(1)} warning />,
+    <window.ErrorScreen onRetry={go(3)} />,
+  ][step];
+  return <><div id="nav">{steps.map((s,i)=><button key={s} aria-current={i===step} onClick={go(i)}>{s}</button>)}</div>{screen}</>;
+}
+ReactDOM.createRoot(document.getElementById('kit')).render(<Kit />);
+</script></body></html>

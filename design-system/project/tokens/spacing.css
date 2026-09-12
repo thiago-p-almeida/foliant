@@ -1,0 +1,16 @@
+:root{
+/* Escala base 8px */
+--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px;--space-8:32px;--space-12:48px;
+/* Densidade por categoria de elemento */
+--pad-essential:var(--space-8);   /* ação principal, drop, botão Converter */
+--pad-conditional:var(--space-4); /* metadados, opções avançadas */
+--pad-contextual:var(--space-3);  /* selo, aviso, badge */
+/* Raios */
+--radius-sm:4px;  /* input, tag */
+--radius-md:8px;  /* card, botão */
+--radius-lg:12px; /* drag-and-drop, modal */
+--radius-pill:999px;
+/* Alvo de toque (WCAG 2.5.5) */
+--touch-target:44px;--icon-size:24px;--icon-stroke:2px;
+--app-max-width:560px;
+}
