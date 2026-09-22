@@ -211,6 +211,19 @@ async function iniciarInspecao(caminho) {
   }
 }
 
+// Faixa min–max (não valor único) — a Fase 4.15 mediu ~40% de desvio-
+// padrão por página de OCR entre amostras do mesmo livro; um valor
+// único esconderia essa incerteza real. segundosMin/segundosMax vêm
+// prontos de foliant.py (estimar_tempo_conversao) — só formatação aqui.
+function formatarTempoEstimado(segundosMin, segundosMax) {
+  if (typeof segundosMax !== "number" || segundosMax < 60) {
+    return "menos de 1 min";
+  }
+  const minutosMin = Math.max(1, Math.round(segundosMin / 60));
+  const minutosMax = Math.max(minutosMin, Math.round(segundosMax / 60));
+  return minutosMin === minutosMax ? `~${minutosMin} min` : `${minutosMin}–${minutosMax} min`;
+}
+
 function popularInspecaoNaTela(dados) {
   const metaEl = telaEl.querySelector("#ac-meta");
   if (!metaEl) return; // tela já mudou
@@ -219,11 +232,19 @@ function popularInspecaoNaTela(dados) {
   const tagEscaneadasEl = telaEl.querySelector("#ac-tag-escaneadas");
   const explicacao1El = telaEl.querySelector("#ac-explicacao-1");
   const explicacao2El = telaEl.querySelector("#ac-explicacao-2");
+  const tempoEstimadoEl = telaEl.querySelector("#ac-tempo-estimado");
   const tituloInput = telaEl.querySelector("#ac-titulo");
   const autorInput = telaEl.querySelector("#ac-autor");
 
   const tamanhoMb = (dados.tamanho_bytes / (1024 * 1024)).toFixed(1);
   metaEl.textContent = `${dados.paginas} página${dados.paginas === 1 ? "" : "s"} · ${tamanhoMb} MB`;
+
+  if (tempoEstimadoEl) {
+    tempoEstimadoEl.textContent = formatarTempoEstimado(
+      dados.tempo_estimado_min_s,
+      dados.tempo_estimado_max_s,
+    );
+  }
 
   if (dados.nativas > 0) {
     tagNativasEl.textContent = `${dados.nativas} página${dados.nativas === 1 ? "" : "s"} com texto`;
@@ -234,9 +255,23 @@ function popularInspecaoNaTela(dados) {
     tagEscaneadasEl.hidden = false;
   }
 
-  explicacao1El.textContent =
-    `${dados.nativas} páginas já têm texto de verdade. As outras ${dados.escaneadas} são imagem ` +
-    "escaneada — o Foliant vai reconhecer o texto delas letra por letra.";
+  // Caso comum (nativas>0 e escaneadas>0) descreve os dois grupos; os
+  // extremos (um dos dois é 0) têm frase própria — o texto do caso comum
+  // fica sem sentido nesses extremos (ex.: "as outras 0 são imagem
+  // escaneada" quando não há nenhuma página escaneada).
+  if (dados.nativas > 0 && dados.escaneadas === 0) {
+    explicacao1El.textContent =
+      `${dados.nativas} páginas já têm texto de verdade. E 0 imagens escaneadas. ` +
+      "Arquivo pronto para conversão.";
+  } else if (dados.nativas === 0 && dados.escaneadas > 0) {
+    explicacao1El.textContent =
+      `Nenhuma página tem texto de verdade. As ${dados.escaneadas} são imagem ` +
+      "escaneada — o Foliant vai reconhecer o texto delas letra por letra.";
+  } else {
+    explicacao1El.textContent =
+      `${dados.nativas} páginas já têm texto de verdade. As outras ${dados.escaneadas} são imagem ` +
+      "escaneada — o Foliant vai reconhecer o texto delas letra por letra.";
+  }
   explicacao2El.textContent =
     "Dependendo do tamanho do arquivo, pode demorar. Mas no fim, o arquivo fica leve, com fonte ajustável e busca por palavra.";
 
@@ -690,9 +725,9 @@ function renderizarComRessalva(dados = {}) {
 // Estado 6 — falha
 // ---------------------------------------------------------------------
 
-// `motivo === "sem_texto_legivel"` vem de FALHA: (ver foliant.py, main) —
-// nenhuma página do PDF produziu conteúdo reconhecível. Mensagem
-// específica nesse caso; qualquer outro código de saída != 0 mantém o
+// `motivo === "sem_texto_legivel"` e `motivo === "estrutura_invalida"` vêm
+// de FALHA: (ver foliant.py, main) — mensagem específica nesses dois casos;
+// qualquer outro código de saída != 0 (sem motivo reconhecido) mantém o
 // texto genérico já validado (crash real, sidecar não encontrado, etc.).
 function renderizarFalha(opts = {}) {
   const corpoEl = telaEl.querySelector("#erro .callout-corpo");
@@ -701,6 +736,11 @@ function renderizarFalha(opts = {}) {
       "Não há texto legível neste PDF para converter — nenhuma página produziu " +
       "conteúdo reconhecível. Verifique se o arquivo não está corrompido, " +
       "protegido, ou se é só imagem sem texto.";
+  } else if (corpoEl && opts.motivo === "estrutura_invalida") {
+    corpoEl.textContent =
+      "A conversão parou porque a estrutura interna do PDF está inválida — " +
+      "o arquivo provavelmente está corrompido ou incompleto. Tente baixá-lo " +
+      "de novo ou reabri-lo em outro programa e salvar uma nova cópia.";
   }
   const logDetalhesEl = telaEl.querySelector("#log-detalhes");
   if (logDetalhesEl) logDetalhesEl.open = true; // erro real sempre mostra o log expandido

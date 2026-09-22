@@ -91,6 +91,32 @@ CAMINHOS_ABSOLUTOS_FALLBACK = {
 # evidência em mãos.
 RENDER_DPI = 200
 
+# Tempo médio e desvio-padrão de OCR por página (segundos), medidos com
+# dado real na Fase 4.15 — 40 páginas amostradas dos 2 livros de
+# calibração 100% escaneados do repo (samples/001-080.pdf e
+# samples/livro_completo_208pg.pdf, mesma obra em duas amostras),
+# MacBook 2016, RENDER_DPI=200 (idêntico ao valor de produção acima).
+# Ver scripts/calibracao_ocr_resultados/RELATORIO.md para o dado bruto
+# e a proveniência completa. Página nativa (~0,015s, confirmado
+# desprezível na mesma investigação) não entra na conta — só páginas
+# escaneadas custam o suficiente para valer estimar.
+TEMPO_OCR_MEDIA_S = 6.08
+TEMPO_OCR_DESVIO_S = 1.96
+
+
+def estimar_tempo_conversao(escaneadas: int) -> tuple[float, float]:
+    """Faixa (segundos_min, segundos_max) de tempo estimado de OCR,
+    linear no nº de páginas escaneadas — nativas ficam de fora da conta
+    (custo desprezível, ver TEMPO_OCR_MEDIA_S). A faixa usa
+    média±desvio-padrão POR PÁGINA multiplicado pelo total de páginas
+    (não desvio agregado/√n) — mais simples e mais conservador (faixa
+    mais larga) que assumir independência estatística entre páginas do
+    mesmo livro, o que a amostra da Fase 4.15 não valida (só 1 obra
+    escaneada disponível para medir)."""
+    segundos_min = max(0.0, escaneadas * (TEMPO_OCR_MEDIA_S - TEMPO_OCR_DESVIO_S))
+    segundos_max = escaneadas * (TEMPO_OCR_MEDIA_S + TEMPO_OCR_DESVIO_S)
+    return segundos_min, segundos_max
+
 
 def check_dependencies() -> None:
     faltando = []
@@ -119,8 +145,21 @@ def check_dependencies() -> None:
         sys.exit(1)
 
 
+# As 3 regras de imagem (`img`/`figure`/`figcaption`) foram adicionadas na
+# Fase 4.20, depois de medir o EPUB real gerado pelo pipeline: até então
+# NENHUMA regra de imagem existia aqui, e o Calibre sintetizava por conta
+# própria `.calibre4 { height: auto; width: auto; }` — ou seja, largura
+# intrínseca, sem nenhuma contenção. No FDE convertido, as imagens de
+# corpo chegam a 2048px de largura (`pg172_0.png`, `pg174_0.png`,
+# `pg164_0.png`), contra ~1600px de viewport de um tablet Android de 10":
+# transbordo garantido por construção, não hipótese. `max-width: 100%` é
+# a técnica compatível com e-reader real; `srcset` foi descartado por
+# suporte irregular e por não sobreviver de forma confiável ao Calibre.
+# `figcaption` precisa de `text-indent: 0` explícito porque a regra `p`
+# acima aplica 1.2em incondicionalmente e o Calibre achata as duas no
+# mesmo nível de cascata.
 HTML_HEADER = """<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="{lang}">
 <head>
 <meta charset="utf-8" />
 <title>{titulo}</title>
@@ -133,21 +172,62 @@ HTML_HEADER = """<!DOCTYPE html>
   section.pagina:first-of-type {{ page-break-before: avoid; }}
   p {{ text-indent: 1.2em; margin: 0 0 0.4em 0; }}
   h2 {{ font-size: 1.4em; margin: 1em 0 0.6em 0; text-indent: 0; }}
+  img {{ max-width: 100%; height: auto; }}
+  figure {{ margin: 1em 0; text-align: center; page-break-inside: avoid; }}
+  figcaption {{ font-size: 0.9em; text-indent: 0; }}
 </style>
 </head>
 <body>
 """
 HTML_FOOTER = "</body>\n</html>\n"
 
+# Mapeamento de formato ISO 639-2/T (3 letras, usado por --lang do Tesseract
+# e já propagado ao --language do Calibre desde b4453b4) para BCP 47 (2
+# letras, esperado pelo atributo lang do HTML5). Não é detecção de idioma —
+# é conversão determinística de código para o mesmo idioma já escolhido via
+# --lang; carrega o mesmo risco residual já aceito no OPF do Calibre desde
+# b4453b4 (idioma do MOTOR de OCR, não necessariamente validado como idioma
+# real do conteúdo do livro). Só por/eng/spa são suportados pela UI.
+_LANG_OCR_PARA_HTML = {"por": "pt", "eng": "en", "spa": "es"}
 
-# Ruído decorativo (bullets/travessões/aspas soltas que o Tesseract lê como
-# caractere de texto) no início de uma linha. Frases reais em português
-# praticamente nunca começam com esses caracteres, então basta descartar
-# uma sequência curta (1-3) deles no início — sem exigir maiúscula em
-# seguida, já que o número de item que segue o marcador (ex.: "* 41 Que
-# critérios...") ou a continuação em minúscula (ex.: "- possibilita
-# melhor...") fariam esse tipo de checagem falhar.
-_RE_RUIDO_INICIAL = re.compile(r'^[\*—\-;"\'“”\s]{1,3}')
+
+def lang_html_de_ocr(lang_ocr: str) -> str:
+    return _LANG_OCR_PARA_HTML.get(lang_ocr, "pt")
+
+
+# Ruído decorativo (bullets/travessões/marcadores soltos que o Tesseract lê
+# como caractere de texto) no início de uma linha. Frases reais em
+# português praticamente nunca começam com esses caracteres, então basta
+# descartar uma sequência curta (1-3) deles no início — sem exigir
+# maiúscula em seguida, já que o número de item que segue o marcador
+# (ex.: "* 41 Que critérios...") ou a continuação em minúscula (ex.: "-
+# possibilita melhor...") fariam esse tipo de checagem falhar.
+#
+# CORREÇÃO REAL (TRACE.md, décimo segundo episódio, itens 1 e 7): a
+# versão original desta regex também incluía aspas retas/curvas na
+# classe de ruído, e tratava QUALQUER "*" inicial como decorativo sem
+# distinção. Isso apagava pontuação semanticamente significativa —
+# confirmado com dado real em `samples/Artigos Científicos... PEREIRA.pdf`
+# (texto nativo, não erro de OCR): pg. 801, aspa de abertura de uma
+# citação (`'"Muitas regras...'`) virava `'Muitas regras...'`, deixando a
+# aspa de fechamento órfã 5 linhas depois; pg. 41, o `*` que liga a nota
+# de rodapé da Tabela 2.10 ao marcador `"...Ohio, EUA*"` era apagado da
+# própria nota (`'*Reúne instruções...'` → `'Reúne instruções...'`).
+#
+# Fix: (1) aspas (retas `'` `"` e curvas `" " ' '`) saíram da classe de
+# ruído por completo — nenhum caso real de "aspa solta = ruído genuíno de
+# OCR" foi encontrado nesta investigação, só regressão; (2) `*` só é
+# tratado como ruído quando NÃO está colado a uma palavra (lookahead
+# negativo `(?!\w)`) — cobre o marcador de nota real (`"*Reúne
+# instruções..."`, preservado) sem deixar de cobrir os dois casos reais
+# de `*` puramente decorativo já validados antes: a linha isolada `"*"`
+# do ícone do logo GEN OCRizado (`samples/001-080.pdf` pg. 4, ver
+# TASKS.md Fase 4.5) e o marcador de margem que se repete `"* "` (sempre
+# seguido de espaço) no início de dezenas de linhas de corpo do mesmo
+# livro (pgs. 23-77, confirmado por OCR real nesta correção) — em nenhum
+# dos dois o `*` está colado à palavra seguinte, então continuam sendo
+# removidos como antes.
+_RE_RUIDO_INICIAL = re.compile(r'^(?:[—\-;\s]|\*(?!\w)){1,3}')
 
 # Contagem mínima (número absoluto de páginas, NÃO fração do livro) para
 # considerar uma linha inicial repetida um cabeçalho de seção.
@@ -262,9 +342,12 @@ def similaridade_cabecalho(a: frozenset[str], b: frozenset[str]) -> float:
 
 
 def limpar_linha(linha: str) -> str:
-    """Remove ruído decorativo do início de uma linha crua de OCR. Deve
-    rodar ANTES de html.escape(): aspas retas (") são escapadas para
-    &quot;, o que quebraria o casamento da regex se rodasse depois."""
+    """Remove ruído decorativo do início de uma linha crua de OCR/nativa
+    (ver `_RE_RUIDO_INICIAL`) — aspas e `*` colado a palavra (marcador de
+    nota de rodapé) são preservados, não tratados como ruído. Deve rodar
+    ANTES de `unir_linhas_em_paragrafos()`, uma linha de cada vez — ver a
+    docstring dela para o motivo (marcador de margem repetido por linha
+    em bloco de texto contínuo)."""
     return _RE_RUIDO_INICIAL.sub('', linha)
 
 
@@ -472,14 +555,87 @@ def detectar_titulo(linhas: list[tuple[str, float]]) -> tuple[str | None, int]:
     trechos.append((inicio, fim))
 
     inicio, fim = trechos[-1]
-    candidatos = [limpar_linha(janela[i][0]).strip() for i in range(inicio, fim + 1)]
+    # Guarda contra marcador de imagem de corpo (`_MARCADOR_IMG_PREFIXO`)
+    # caído dentro do intervalo do título — nunca é selecionado como
+    # linha "forte" (tamanho sempre 0.0, nunca cruza LIMIAR_RAZAO_TITULO),
+    # mas poderia sobreviver como linha FRACA tolerada no meio de um
+    # trecho de título de várias linhas; sem este filtro, o texto cru do
+    # marcador vazaria para dentro do <h2> gerado em `construir_html()`.
+    candidatos = [
+        limpar_linha(janela[i][0]).strip()
+        for i in range(inicio, fim + 1)
+        if not janela[i][0].startswith(_MARCADOR_IMG_PREFIXO)
+    ]
     candidatos = [c for c in candidatos if c]
     if not candidatos:
         return None, 0
     return " ".join(candidatos), fim + 1
 
 
-def extrair_linhas_nativas(pagina: "pymupdf.Page") -> list[tuple[str, float, float]]:
+# Prefixo-sentinela que marca uma "linha" da sequência de texto de uma
+# página como, na verdade, uma imagem de corpo extraída — não uma linha
+# de prosa. `\x00` nunca aparece em texto real de PDF/OCR, então é seguro
+# como marcador sem precisar de um campo novo no schema do cache
+# (`registro["texto"]` continua sendo uma string única, join/split por
+# linha, exatamente como hoje — só que uma das "linhas" pode ser este
+# marcador em vez de prosa). Formato completo da linha marcada:
+# `_MARCADOR_IMG_PREFIXO + nome_arquivo + "\x00" + legenda_ou_vazio`.
+#
+# BUG REAL CORRIGIDO: a primeira versão detectava a legenda depois de já
+# ter passado por `unir_linhas_em_paragrafos()` (olhando o parágrafo
+# seguinte ao marcador na lista final) — quebrado, porque a legenda pode
+# já vir FUNDIDA com o parágrafo de corpo seguinte antes desse ponto
+# (achado real, FDE pg. 13: "Figure 1-2. Data tools..." grudava com "In
+# fact, the authors believe..." dentro do mesmo `<figcaption>`, porque a
+# linha de corpo após a legenda não tinha recuo suficiente para ser
+# classificada como início de novo parágrafo — ela é, na estrutura real
+# do PDF, a CONTINUAÇÃO do parágrafo interrompido pela figura, não uma
+# frase nova). Fix: a legenda é detectada e consumida AQUI, direto nos
+# blocos crus de `get_text("dict")` (antes de qualquer fusão de
+# parágrafo) — o bloco de texto imediatamente seguinte ao bloco de
+# imagem só é tratado como legenda (e embutido no próprio marcador,
+# nunca emitido como uma "linha" separada) se bater
+# `_RE_LEGENDA_FIGURA`; caso contrário seque como texto de corpo normal,
+# sujeito às mesmas regras de fusão de parágrafo de sempre. Ver
+# `extrair_linhas_nativas()` (onde é gravado e a legenda é extraída),
+# `linhas_inicio_paragrafo()`/`unir_linhas_em_paragrafos()` (onde o
+# marcador é protegido de ser tratado como texto) e `construir_html()`
+# (onde vira `<img>`/`<figure><figcaption>`).
+_MARCADOR_IMG_PREFIXO = "\x00IMG\x00"
+
+# Heurística de legenda para imagem de corpo: se o bloco de texto
+# IMEDIATAMENTE seguinte ao bloco de imagem, nos blocos crus de
+# `get_text("dict")` (ver `extrair_linhas_nativas`), bater este padrão,
+# vira <figcaption> dentro de um <figure> em vez de <img> solto. Cobre
+# PT/EN (mesmo par de idiomas já suportado no resto do projeto — ver
+# _STOPWORDS_CABECALHO). Validado contra 2 casos reais, ambos com legenda
+# imediatamente após a imagem: "Figure 1-2. Data tools in 2012 vs 2021"
+# (FDE, pg. 13) e "Figura 4.1 Evolução da estrutura IMRD..." (PEREIRA,
+# pg. 75). RISCO RESIDUAL EXPLÍCITO: não testado contra legenda ANTES da
+# imagem ou separada por texto intermediário — nesses casos a heurística
+# simplesmente não casa, o bloco seguinte vira um <p> normal (mesmo
+# comportamento de antes desta extração existir), só sem o <figcaption>
+# semântico. Decisão de escopo: aceitar essa cobertura parcial nesta
+# rodada, não expandir sem mais casos reais.
+_RE_LEGENDA_FIGURA = re.compile(r"^(Figura|Figure|Tabela|Table)\s+\d", re.IGNORECASE)
+
+# Tamanho mínimo (largura OU altura exibida na página, em pontos PDF) para
+# uma imagem de corpo nativa ser tratada como figura de conteúdo, não
+# ruído decorativo. Calibrado com achado real: PEREIRA ("Artigos
+# Científicos..."), pg. 645, tem 2 imagens de 18x31px nativos exibidas a
+# só 6,8x12pt — abertas e inspecionadas visualmente, são um glifo
+# decorativo de borda de tabela (não uma figura de conteúdo). O menor
+# gráfico real validado no mesmo livro (pg. 75, gráfico de linha) tem
+# 273,8pt de altura — folga enorme acima de 20pt, sem risco de descartar
+# conteúdo real. Testado contra os 2 livros de amostra completos (FDE
+# 210pg., PEREIRA 903pg.): filtrou exatamente os 2 ícones decorativos do
+# PEREIRA, 0 falsos positivos/negativos no FDE.
+LARGURA_MINIMA_IMAGEM_CORPO_PT = 20.0
+
+
+def extrair_linhas_nativas(
+    pagina: "pymupdf.Page", destino_dir: Path, pagina_num: int
+) -> list[tuple[str, float, float]]:
     """Fonte (a) — PDF com texto nativo: uma linha por (texto, tamanho de
     fonte médio dos spans da linha, posição X do início do bbox da
     linha), via get_text("dict"). O `left` alimenta
@@ -500,10 +656,53 @@ def extrair_linhas_nativas(pagina: "pymupdf.Page") -> list[tuple[str, float, flo
     especificamente para texto nativo, risco residual menor (título de
     capítulo tem razão de tamanho tipicamente bem acima de qualquer
     limiar razoável; ver LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO abaixo para um
-    limiar À PARTE, mais baixo, calibrado para subtítulos de seção)."""
+    limiar À PARTE, mais baixo, calibrado para subtítulos de seção).
+
+    Extração de imagem de corpo (gap fechado, ver TRACE.md): blocos de
+    imagem (`bloco["type"] == 1`) já vêm na MESMA lista ordenada de
+    `get_text("dict")["blocks"]`, em ordem de leitura, junto dos blocos
+    de texto, com os bytes já embutidos (`bloco["image"]`) — não precisa
+    de uma segunda varredura via `get_images()`/`extract_image()` (a
+    mesma API que `extrair_capa()` usa para a página 0). Cada imagem
+    aceita pelo filtro de tamanho é gravada em streaming (um arquivo por
+    imagem, nunca acumula o livro inteiro em RAM — mesma garantia de
+    `extrair_capa()`) e entra na sequência de linhas como um marcador
+    sentinela (`_MARCADOR_IMG_PREFIXO`), não como texto — protegido de
+    virar prosa em `linhas_inicio_paragrafo()`/`unir_linhas_em_paragrafos()`
+    logo abaixo. Só cobre o caminho de texto NATIVO: em PDF 100%
+    escaneado, `get_images()`/blocos tipo 1 devolvem a PÁGINA INTEIRA
+    como se fosse "a imagem" (mesmo limite documentado em `extrair_capa`)
+    — não há como distinguir "figura dentro da página" de "a página é a
+    imagem" nesse caso, então o caminho OCR (`extrair_linhas_ocr`) não
+    ganha imagem de corpo nesta rodada, por decisão de escopo."""
     linhas = []
-    d = pagina.get_text("dict")
-    for bloco in d["blocks"]:
+    indice_img = 0
+    blocos = pagina.get_text("dict")["blocks"]
+    blocos_consumidos: set[int] = set()
+    for idx_bloco, bloco in enumerate(blocos):
+        if idx_bloco in blocos_consumidos:
+            continue
+        if bloco.get("type") == 1:
+            largura = bloco["bbox"][2] - bloco["bbox"][0]
+            altura = bloco["bbox"][3] - bloco["bbox"][1]
+            if largura < LARGURA_MINIMA_IMAGEM_CORPO_PT or altura < LARGURA_MINIMA_IMAGEM_CORPO_PT:
+                continue
+            nome = f"pg{pagina_num}_{indice_img}.{bloco['ext']}"
+            (destino_dir / nome).write_bytes(bloco["image"])
+            indice_img += 1
+
+            legenda = ""
+            if idx_bloco + 1 < len(blocos) and "lines" in blocos[idx_bloco + 1]:
+                texto_proximo = " ".join(
+                    "".join(span["text"] for span in linha["spans"])
+                    for linha in blocos[idx_bloco + 1]["lines"]
+                ).strip()
+                if _RE_LEGENDA_FIGURA.match(texto_proximo):
+                    legenda = texto_proximo
+                    blocos_consumidos.add(idx_bloco + 1)
+
+            linhas.append((f"{_MARCADOR_IMG_PREFIXO}{nome}\x00{legenda}", 0.0, 0.0))
+            continue
         if "lines" not in bloco:
             continue
         for linha in bloco["lines"]:
@@ -596,23 +795,49 @@ def linhas_inicio_paragrafo(
     A primeira linha da página não tem uma anterior para comparar —
     marcada True (início) por padrão; `construir_html()` sobrescreve isso
     de qualquer forma para a primeira linha que sobra após remover
-    título/cabeçalho de página (ver comentário lá)."""
+    título/cabeçalho de página (ver comentário lá).
+
+    Override 3 (marcador de imagem de corpo, ver `_MARCADOR_IMG_PREFIXO`
+    em `extrair_linhas_nativas()`): uma imagem nunca é continuação de
+    texto nem tem texto real colado a ela — forçada True tanto quando É
+    o marcador quanto na linha SEGUINTE a ele, senão
+    `unir_linhas_em_paragrafos()` fundiria prosa real para dentro da
+    string do marcador (quebrando o parsing em `construir_html()`) ou
+    fundiria o marcador para dentro de um parágrafo de texto.
+
+    BUG REAL CORRIGIDO durante a validação desta mesma extração de
+    imagem: o marcador de imagem entra em `linhas` com `left`/`tamanho`
+    fictícios (`0.0`, ver `extrair_linhas_nativas`) só para manter o
+    formato de tupla — incluí-los no cálculo de `mediana_left`/
+    `mediana_tamanho` da página CONTAMINA a estatística usada para
+    classificar toda linha de TEXTO real da mesma página (mediana
+    artificialmente puxada para baixo por zeros que não representam
+    posição/tamanho real nenhum). Visto de verdade no HTML gerado antes
+    desta correção: a legenda de uma figura (FDE, pg. 13) grudava no
+    parágrafo de corpo seguinte dentro do mesmo `<figcaption>`, porque a
+    classificação de início-de-parágrafo da linha de corpo errava nessa
+    página especificamente (com imagem) e não nas outras (sem imagem) —
+    só a mediana da página muda entre os dois casos. Fix: medianas
+    calculadas só sobre linhas de TEXTO real, excluindo marcadores."""
     if not linhas:
         return []
 
-    lefts = [left for _, _, left in linhas]
-    mediana_left = statistics.median(lefts)
+    linhas_texto = [l for l in linhas if not l[0].startswith(_MARCADOR_IMG_PREFIXO)]
+    lefts = [left for _, _, left in linhas_texto]
+    mediana_left = statistics.median(lefts) if lefts else 0.0
     mediana_tamanho = (
-        statistics.median(tamanho for _, tamanho, _ in linhas)
-        if limiar_razao_tamanho is not None
+        statistics.median(tamanho for _, tamanho, _ in linhas_texto)
+        if limiar_razao_tamanho is not None and linhas_texto
         else None
     )
 
     resultado = [True]
     for idx in range(1, len(linhas)):
         texto_anterior, _, _ = linhas[idx - 1]
-        _, tamanho_atual, left_atual = linhas[idx]
-        if texto_anterior.rstrip().endswith("-"):
+        texto_atual, tamanho_atual, left_atual = linhas[idx]
+        if texto_anterior.startswith(_MARCADOR_IMG_PREFIXO) or texto_atual.startswith(_MARCADOR_IMG_PREFIXO):
+            resultado.append(True)
+        elif texto_anterior.rstrip().endswith("-"):
             resultado.append(False)
         elif (
             mediana_tamanho is not None
@@ -626,12 +851,16 @@ def linhas_inicio_paragrafo(
 
 
 def extrair_texto_pagina(
-    doc: "pymupdf.Document", i: int, matriz_zoom: "pymupdf.Matrix", lang: str
+    doc: "pymupdf.Document", i: int, matriz_zoom: "pymupdf.Matrix", lang: str, destino_dir: Path
 ) -> tuple[str, str | None, int, list[bool]]:
     """Extrai o texto de uma página e detecta o título de capítulo (se
     houver): usa a camada de texto nativa se existir, senão renderiza e
     faz OCR. Libera pixmap/imagem antes de retornar — nunca acumula mais
     de uma página em memória.
+
+    `destino_dir` só é usado no caminho nativo (ver `extrair_linhas_nativas`)
+    — é onde imagens de corpo extraídas da página são gravadas em
+    streaming, mesmo diretório onde `extrair_capa()` grava `capa.*`.
 
     Uma única chamada de OCR por página: image_to_data() no lugar de
     image_to_string(), reconstruindo o texto a partir das mesmas linhas
@@ -657,7 +886,7 @@ def extrair_texto_pagina(
     texto_nativo = pagina.get_text("text").strip()
 
     if texto_nativo:
-        linhas_nativas = extrair_linhas_nativas(pagina)
+        linhas_nativas = extrair_linhas_nativas(pagina, destino_dir, i + 1)
         texto = "\n".join(texto_linha for texto_linha, _, _ in linhas_nativas)
         inicio_paragrafo = linhas_inicio_paragrafo(
             linhas_nativas,
@@ -827,6 +1056,8 @@ def inspecionar_pdf(pdf_path: Path) -> dict:
     titulo = (metadata.get("title") or "").strip() or derivar_titulo_do_nome(pdf_path)
     autor = (metadata.get("author") or "").strip()
     nativas = contar_nativas(doc, total)
+    escaneadas = total - nativas
+    tempo_min_s, tempo_max_s = estimar_tempo_conversao(escaneadas)
 
     return {
         "titulo": titulo,
@@ -834,8 +1065,48 @@ def inspecionar_pdf(pdf_path: Path) -> dict:
         "paginas": total,
         "tamanho_bytes": pdf_path.stat().st_size,
         "nativas": nativas,
-        "escaneadas": total - nativas,
+        "escaneadas": escaneadas,
+        "tempo_estimado_min_s": tempo_min_s,
+        "tempo_estimado_max_s": tempo_max_s,
     }
+
+
+def _normalizar_para_comparacao_metadado(s: str) -> str:
+    s = s.lower()
+    s = re.sub(r"[^\w\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def pagina0_e_duplicata_de_metadados(texto_pagina0: str, titulo_meta: str, autor_meta: str) -> bool:
+    """Decide se o texto OCR/nativo da página 0 é só uma repetição do
+    título/autor já conhecidos via `doc.metadata` (mesmos campos que
+    `inspecionar_pdf` lê para popular a tela de metadados) — sinal usado
+    para suprimir esse texto do corpo sem depender só de `capa_path`
+    existir. `capa_path is not None` sozinho não basta: qualquer página 0
+    com QUALQUER imagem embutida (inclusive conteúdo real renderizado
+    como imagem, ou até ruído nos fixtures de teste) dispara
+    `extrair_capa()` com sucesso, e suprimir nesses casos apagaria texto
+    real do livro — achado real em `tests/fixtures/ressalva_parcial.pdf`
+    (página 1, texto legítimo, sumiu do corpo ao usar só `capa_path`).
+
+    Comparação por palavra, não substring exata — o texto extraído da
+    capa pode reordenar/quebrar "Autor" e "Título" de forma diferente da
+    ordem em que aparecem nos campos de metadado separados (achado real:
+    PEREIRA, OCR da capa saiu "Maurício Gomes Pereira Artigos
+    Científicos..." — autor antes do título, mas os dois campos batem
+    palavra por palavra com o metadado). Sem título NEM autor no
+    metadado, não há sinal confiável — não suprime (evita falso positivo
+    por coincidência de poucas palavras comuns)."""
+    texto_norm = _normalizar_para_comparacao_metadado(texto_pagina0)
+    if not texto_norm or not (titulo_meta or autor_meta):
+        return False
+    residual = texto_norm
+    for campo in (titulo_meta, autor_meta):
+        for palavra in _normalizar_para_comparacao_metadado(campo).split():
+            residual = re.sub(rf"\b{re.escape(palavra)}\b", "", residual, count=1)
+    residual = re.sub(r"\s+", " ", residual).strip()
+    return len(residual) <= 15
 
 
 def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[str], Path | None, int]:
@@ -873,16 +1144,38 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
 
     print(f'PROGRESS:{{"fase":"ocr","atual":0,"total":{total}}}')
     capa_path = extrair_capa(doc, cache_path.parent)
+    metadata = doc.metadata or {}
+    titulo_meta = (metadata.get("title") or "").strip()
+    autor_meta = (metadata.get("author") or "").strip()
 
     with cache_path.open("w", encoding="utf-8") as cache:
         for i in range(total):
-            texto, titulo, n_linhas_titulo, inicio_paragrafo = extrair_texto_pagina(doc, i, matriz_zoom, lang)
+            texto, titulo, n_linhas_titulo, inicio_paragrafo = extrair_texto_pagina(
+                doc, i, matriz_zoom, lang, cache_path.parent
+            )
+
+            # Página 0 com capa extraída E cujo texto é só repetição do
+            # título/autor já conhecidos (ver `pagina0_e_duplicata_de_metadados`):
+            # suprime do corpo — já apresentado visualmente via `capa_path`/
+            # --cover (achado real: PEREIRA, "Maurício Gomes Pereira Artigos
+            # Científicos..." duplicado como 1º parágrafo do corpo).
+            # `pagina_capa_suprimida` sinaliza para `construir_html` pular o
+            # fallback de "não pôde ser transcrita" nesta página, sem contá-la
+            # em `paginas_sem_texto`/RESSALVA.
+            pagina_capa_suprimida = i == 0 and capa_path is not None and pagina0_e_duplicata_de_metadados(
+                texto, titulo_meta, autor_meta
+            )
+            if pagina_capa_suprimida:
+                texto, titulo, n_linhas_titulo, inicio_paragrafo = "", None, 0, []
+
             registro = {
                 "texto": texto,
                 "titulo": titulo,
                 "n_linhas_titulo": n_linhas_titulo,
                 "inicio_paragrafo": inicio_paragrafo,
             }
+            if pagina_capa_suprimida:
+                registro["pagina_capa_suprimida"] = True
             cache.write(json.dumps(registro) + "\n")
 
             for linha in texto.splitlines():
@@ -920,7 +1213,13 @@ def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -
     Limpar essas linhas já unidas removeria só o marcador da primeira, e
     limpar cada linha crua isoladamente ANTES de unir remove o marcador
     de todas — por isso a ordem importa e a limpeza tem que ser por
-    linha, antes da fusão."""
+    linha, antes da fusão.
+
+    Marcador de imagem de corpo (`_MARCADOR_IMG_PREFIXO`): nenhuma lógica
+    especial aqui — `linhas_inicio_paragrafo()` já força `True` no
+    marcador e na linha seguinte a ele, então esta função naturalmente
+    trata o marcador como seu próprio item da lista, sem fundir texto
+    real para dentro dele nem ele para dentro de um parágrafo."""
     paragrafos: list[str] = []
     for l, novo in zip(linhas, inicio_paragrafo):
         if not l:
@@ -934,18 +1233,25 @@ def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -
     return paragrafos
 
 
-def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str]) -> list[int]:
+def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str], lang: str) -> list[int]:
     """Passo 2/2: lê o cache de texto por página (streaming, sem OCR novo)
     e escreve o HTML final, removendo o cabeçalho de seção repetido
     (quando é a primeira linha da página), promovendo o título de
     capítulo detectado (se houver) para <h2>, limpando o ruído decorativo
-    de OCR e unindo linhas de continuação em parágrafos reais (Tarefa B).
+    de OCR, unindo linhas de continuação em parágrafos reais (Tarefa B) e
+    intercalando imagens de corpo extraídas (ver `_MARCADOR_IMG_PREFIXO`
+    em `extrair_linhas_nativas()`) como `<img>`/`<figure>` na posição em
+    que apareceram no texto original — não anexadas ao fim da página.
 
     Retorna a lista de páginas (numeração física do PDF, 1-based — a
     mesma usada em `id="pg-{i+1}"` abaixo, não um rótulo de numeração
     impressa que o PDF possa declarar via /PageLabels) que não produziram
     nenhum parágrafo nem título — mesma condição que antes gerava
-    silenciosamente `<p>&#160;</p>`, sem nenhum threshold novo."""
+    silenciosamente `<p>&#160;</p>`, sem nenhum threshold novo. Uma
+    página com só imagem (sem texto e sem título) NÃO entra nesta lista —
+    tem conteúdo real, só não é texto. Uma página marcada como
+    `pagina_capa_suprimida` no cache (ver `primeira_passada`) também NÃO
+    entra nesta lista — texto suprimido de propósito, não falha de OCR."""
     print("Passo 2/2: montando HTML a partir do cache...")
     # sem contador granular nesta fase — medido em produção (ver
     # ARCHITECTURE.md, Fase 4.6): monta o HTML de um livro de 208 páginas
@@ -956,7 +1262,7 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
     paginas_sem_texto: list[int] = []
 
     with cache_path.open(encoding="utf-8") as cache, html_path.open("w", encoding="utf-8") as out:
-        out.write(HTML_HEADER.format(titulo=html.escape(titulo)))
+        out.write(HTML_HEADER.format(titulo=html.escape(titulo), lang=lang_html_de_ocr(lang)))
 
         for i, linha_cache in enumerate(cache):
             registro = json.loads(linha_cache)
@@ -964,6 +1270,7 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
             titulo_pagina = registro["titulo"]
             n_linhas_titulo = registro["n_linhas_titulo"]
             inicio_paragrafo = registro["inicio_paragrafo"]
+            pagina_capa_suprimida = registro.get("pagina_capa_suprimida", False)
 
             # mantém texto e inicio_paragrafo em lockstep ao descartar
             # linha vazia — não confiar que já vêm alinhados 1:1 sem checar.
@@ -990,12 +1297,42 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
 
             linhas_limpas = [limpar_linha(l) for l in linhas]
             paragrafos_texto = unir_linhas_em_paragrafos(linhas_limpas, inicio_paragrafo)
-            paragrafos = "".join(f"<p>{html.escape(p)}</p>\n" for p in paragrafos_texto if p.strip())
+
+            # Intercala <img>/<figure> na posição em que o marcador
+            # apareceu (ver _MARCADOR_IMG_PREFIXO) em vez de tratar
+            # `paragrafos_texto` como só texto — `unir_linhas_em_paragrafos`
+            # já garante que o marcador é seu próprio item da lista (nunca
+            # fundido com prosa real), ver `linhas_inicio_paragrafo`. A
+            # legenda (se houver) já vem embutida no próprio marcador —
+            # extraída em `extrair_linhas_nativas()`, ANTES da fusão de
+            # parágrafos, não depois (ver comentário de
+            # `_MARCADOR_IMG_PREFIXO` para o bug real que essa ordem evita).
+            partes_html = []
+            for p in paragrafos_texto:
+                if not p.strip():
+                    continue
+                if p.startswith(_MARCADOR_IMG_PREFIXO):
+                    nome_arquivo, _, legenda = p[len(_MARCADOR_IMG_PREFIXO):].partition("\x00")
+                    arquivo_img = html.escape(nome_arquivo)
+                    if legenda:
+                        partes_html.append(
+                            f'<figure><img src="{arquivo_img}" alt="" />'
+                            f"<figcaption>{html.escape(legenda)}</figcaption></figure>\n"
+                        )
+                    else:
+                        partes_html.append(f'<img src="{arquivo_img}" alt="" />\n')
+                    continue
+                partes_html.append(f"<p>{html.escape(p)}</p>\n")
+            paragrafos = "".join(partes_html)
 
             out.write(f'<section class="pagina" id="pg-{i+1}">\n')
             out.write(html_titulo)
             if paragrafos:
                 out.write(paragrafos)
+            elif pagina_capa_suprimida:
+                # Texto suprimido de propósito (ver `primeira_passada`) —
+                # não é falha de OCR, não entra em `paginas_sem_texto`/RESSALVA.
+                pass
             elif not html_titulo:
                 paginas_sem_texto.append(i + 1)
                 marcador = (
@@ -1122,13 +1459,54 @@ def main() -> None:
     titulo = args.titulo or args.pdf_entrada.stem
 
     try:
+        # tmp_dir = realpath do diretório, NÃO o path cru devolvido por
+        # tempfile (que no macOS cai em `$TMPDIR`, algo como
+        # `/var/folders/.../T/tmpXXXXXXXX` — ele próprio um caminho sob
+        # `/var`, link simbólico para `/private/var`). Achado real, não
+        # suposição: com o path cru, `--cover` (path absoluto passado
+        # direto na linha de comando ao Calibre) sempre funcionou, mas
+        # <img src="..."> de imagem de corpo (arquivo irmão de
+        # `livro.html`, só referenciado de dentro do HTML, nunca passado
+        # como argumento) falhava SILENCIOSAMENTE — o Calibre terminava
+        # com exit 0, a tag `<img>` sobrevivia no HTML, mas o arquivo de
+        # imagem em si nunca entrava no .epub final (bytes do EPUB
+        # idênticos a uma conversão sem imagem nenhuma). Confirmado que
+        # não é problema de conteúdo/permissão do arquivo (mesmos bytes,
+        # mesmo modo 0644, mesmo processo, mesma chamada a
+        # `convert_to_ebook`) — é resolução de link simbólico:
+        # `os.path.realpath()` do path default já aponta para
+        # `/private/var/folders/...`, e usar ESSE caminho (resolvido, sem
+        # o link) faz o Calibre encontrar as imagens normalmente.
+        # `os.path.realpath()` é a forma correta e portável de resolver
+        # isso — no Linux (onde `tempfile.gettempdir()` tipicamente já é
+        # `/tmp` direto, sem link) `realpath()` é essencialmente um
+        # no-op; testado só neste Mac (sem máquina Linux disponível nesta
+        # sessão para confirmar), mas o mecanismo (seguir symlink) é
+        # padrão do SO, não um comportamento exclusivo de macOS. Ver
+        # TRACE.md. Cleanup continua correto: `TemporaryDirectory` rastreia
+        # e remove o path ORIGINAL que ela criou — `tmp_dir` (resolvido)
+        # aponta para o mesmo diretório físico, só usado para as
+        # operações de arquivo deste bloco.
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_dir = Path(tmp)
+            tmp_dir = Path(os.path.realpath(tmp))
             html_path = tmp_dir / "livro.html"
             cache_path = tmp_dir / "paginas.jsonl"
 
-            cabecalhos, capa_path, total = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
-            paginas_sem_texto = construir_html(cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos)
+            try:
+                cabecalhos, capa_path, total = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
+            except ValueError as erro:
+                # Estrutura do PDF corrompida além do que --inspect detecta:
+                # xref/streams truncados fazem pymupdf.open() aceitar o
+                # arquivo (sem lançar exceção) mas com doc.page_count == 0;
+                # `extrair_capa` então chama doc.load_page(0), que lança
+                # "page not in document" só aqui, na conversão real — caso
+                # mapeado em tests/fixtures/README.md (falha_corrompido.pdf).
+                # FALHA: com motivo específico para o app desktop mostrar
+                # uma mensagem que cubra a possibilidade de corrupção, em
+                # vez da mensagem genérica de qualquer outra falha.
+                print(f'FALHA:{json.dumps({"motivo": "estrutura_invalida", "detalhe": str(erro)})}')
+                sys.exit(1)
+            paginas_sem_texto = construir_html(cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos, lang=args.lang)
 
             if total > 0 and len(paginas_sem_texto) == total:
                 # Nenhuma página produziu texto — não vale rodar o Calibre

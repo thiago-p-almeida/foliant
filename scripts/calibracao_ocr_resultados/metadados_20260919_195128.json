@@ -1,0 +1,150 @@
+{
+  "ambiente": {
+    "platform": "macOS-13.7.8-x86_64-i386-64bit",
+    "tesseract_version": "5.5.3",
+    "tesseract_path": "/usr/local/bin/tesseract",
+    "render_dpi": 200,
+    "render_dpi_fonte": "foliant.RENDER_DPI (import direto, não hardcoded)",
+    "pmset_therm": "2026-09-19 19:51:28 -0300 Thermal Warning Level = 0\n2026-09-19 19:51:28 -0300 Performance Warning Level = 0\n2026-09-19 19:51:28 -0300 CPU Power notify\n\tCPU_Scheduler_Limit \t= 100\n\tCPU_Available_CPUs \t= 4\n\tCPU_Speed_Limit \t= 77"
+  },
+  "lang": "por",
+  "amostragem_por_arquivo": {
+    "001-080.pdf": {
+      "n_amostra_pedido": 20,
+      "paginas_medidas": [
+        0,
+        4,
+        8,
+        12,
+        16,
+        20,
+        24,
+        28,
+        32,
+        36,
+        40,
+        44,
+        48,
+        52,
+        56,
+        60,
+        64,
+        68,
+        72,
+        76
+      ]
+    },
+    "livro_completo_208pg.pdf": {
+      "n_amostra_pedido": 20,
+      "paginas_medidas": [
+        0,
+        10,
+        20,
+        30,
+        40,
+        50,
+        60,
+        70,
+        80,
+        90,
+        100,
+        110,
+        120,
+        130,
+        140,
+        150,
+        160,
+        170,
+        180,
+        190
+      ]
+    },
+    "Artigos Científicos - Como Redigir, Publicar e Avaliar -- PEREIRA, Maurício Gomes.pdf": {
+      "n_amostra_pedido": 30,
+      "paginas_medidas": [
+        0,
+        30,
+        60,
+        90,
+        120,
+        150,
+        180,
+        210,
+        240,
+        270,
+        300,
+        330,
+        360,
+        390,
+        420,
+        450,
+        480,
+        510,
+        540,
+        570,
+        600,
+        630,
+        660,
+        690,
+        720,
+        750,
+        780,
+        810,
+        840,
+        870
+      ]
+    },
+    "Fundamentals of Data Engineering (Third Early Release) -- Joe Reis & Matt Housley - cópia.pdf": {
+      "n_amostra_pedido": 30,
+      "paginas_medidas": [
+        0,
+        7,
+        14,
+        21,
+        28,
+        35,
+        42,
+        49,
+        56,
+        63,
+        70,
+        77,
+        84,
+        91,
+        98,
+        105,
+        112,
+        119,
+        126,
+        133,
+        140,
+        147,
+        154,
+        161,
+        168,
+        175,
+        182,
+        189,
+        196,
+        203
+      ]
+    },
+    "falha_ocr_ilegivel.pdf": {
+      "n_amostra_pedido": null,
+      "paginas_medidas": [
+        0,
+        1,
+        2
+      ]
+    },
+    "ressalva_parcial.pdf": {
+      "n_amostra_pedido": null,
+      "paginas_medidas": [
+        0,
+        1,
+        2,
+        3
+      ]
+    }
+  }
+}
