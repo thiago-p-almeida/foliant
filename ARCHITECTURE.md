@@ -3472,3 +3472,113 @@ Nota de escopo sobre DPI: `RENDER_DPI = 200` foi validado para
 critérios diferentes. A pergunta "um recorte a 200 DPI é legível em
 tablet?" só se aplica ao caminho OCR, que não foi aberto — no caminho
 nativo a figura nunca passa por render.
+
+## Fase 4.21 (v1): detecção de página-figura em documento nativo
+
+Implementado em `classificar_pagina_figura` ([foliant.py](foliant.py)).
+Relato no vigésimo primeiro episódio do `TRACE.md`; registro de tarefa
+em `TASKS.md`.
+
+### Decisão de design central: duas decisões, não uma
+
+"Embutir a imagem" (D1) e "suprimir o texto OCR" (D2) têm custos de erro
+de ordens diferentes:
+
+| decisão | custo de um falso positivo |
+|---|---|
+| **D1** — embutir a imagem | uma `<figure>` redundante ao lado do texto. Recuperável pelo leitor. |
+| **D2** — suprimir o texto OCR | perde a camada de texto (busca, reflow, TTS, ajuste de fonte) de uma página real. Num Kindle, um bloco de texto como imagem é quase ilegível. |
+
+**A v1 implementa só D1.** A assimetria de custo que organizou a
+discussão inicial era, em boa parte, artefato de ter colapsado as duas
+numa só.
+
+### Reconciliação com a invariante da Fase 4.20
+
+A tensão registrada no décimo nono episódio ("o texto OCR a preservar é
+lixo") **não precisou ser resolvida**, porque a v1 não remove texto. A
+invariante — no caminho OCR, o recorte não remove o texto OCR da região
+— continua válida sem exceção.
+
+### O OCR não é gateado pela geometria
+
+A página classificada como figura é OCRada como qualquer outra.
+Deliberado: a economia seria ~6s em ~6 páginas de um livro de 210
+(`TEMPO_OCR_MEDIA_S`), e a saída do OCR (confiança, volume de palavras)
+é o segundo sinal independente que D2 vai exigir. Gatear antes do OCR
+por economia jogaria fora exatamente a evidência necessária para tomar
+a decisão cara com segurança.
+
+### Propriedade que torna D1 seguro em qualquer limiar
+
+Numa página sem texto nativo e com um único bloco de imagem, **a imagem
+contém todo o conteúdo da página** — verificado, inclusive quanto a
+conteúdo vetorial fora do bbox: nas 6 páginas-figura do FDE há 1
+`get_drawings()` cada, um retângulo de preenchimento branco
+(`fill=(1,1,1)`) com extensão degenerada (−4464 a +26216pt numa página
+de 792pt), artefato de clip; no Gil-80, 0 desenhos em 80 páginas.
+
+### Os limiares, e o que é medição e o que é escolha
+
+| critério | forma | origem |
+|---|---|---|
+| (0) documento tem ≥1 página nativa | **não-numérica** | único corte que o corpus sustenta (extremos 0% e 96,7%, sem caso intermediário) |
+| (1) página sem texto nativo | predicado existente | mesmo de `contar_nativas` |
+| (2) exatamente 1 bloco `type==1` | contagem + `LARGURA_MINIMA_IMAGEM_CORPO_PT` | constante já calibrada (Fase 4.14) |
+| (3) cobertura ≤ `0.70` | **escolha arbitrária conservadora** | os dados só dizem onde não pode estar: >97,18% e <58,16% |
+| (4) margem > 0 nos 4 lados | condição `>0`, sem número | medido: figuras do FDE 72-88,5pt; PEREIRA e Gil encostam nas bordas |
+
+O gate de documento **deixou de ser sustentador**: verificado que, com
+ele forçado a `True`, as 288 páginas do Gil continuam dando 0
+positivos. Era sustentador sob o critério do décimo nono episódio, sem
+faixa de cobertura.
+
+### Observabilidade
+
+Antes desta fase não existia **nenhum** ponto no pipeline onde uma
+classificação por página aparecesse: `ANALISE:` é pré-laço e o app já
+descartou sua UI, `PROGRESS:` só carrega `atual`/`total`, e `RESSALVA:`
+vem de `if paragrafos:`, que mede quantidade zero e não qualidade — uma
+página-figura cairia nele como sucesso. A linha `FIGURAS:` e o bloco
+informativo na tela de conclusão são o primeiro canal pelo qual uma
+classificação errada pode ser percebida por quem tem o PDF na mão.
+
+### Limites do corpus, não resolvidos
+
+Uma única obra escaneada (Gil, em 2 arquivos sobrepostos nas primeiras
+80 páginas — não são amostras independentes); nenhum scanner com margem
+cortada, faixas ou rotação; nenhum documento "meio a meio"; N=6
+páginas-figura, de um único template de diagramação (as 6 têm margens
+quase idênticas entre si, o que indica caixa de layout fixa — o teto de
+58,16% é do template, não da classe).
+
+**Condição de falseamento**: um scan recortado ao bloco de texto e
+centralizado, dentro de um livro nativo (anexo digitalizado), passa nos
+5 critérios — o bloco de texto de um livro típico ocupa ~55-70% da
+página, faixa que se sobrepõe à das figuras conhecidas. Em v1 isso
+custa uma `<figure>` redundante e nada mais.
+
+### Pré-requisito para a v2 (supressão do texto OCR)
+
+Medir a distribuição de confiança do OCR nas **288 páginas de texto
+escaneado real do Gil** — a classe negativa, que é a bem povoada — e
+posicionar a guarda abaixo do mínimo observado, com margem. Isso é
+calibração legítima de um critério unilateral, diferente de inventar um
+número sobre N=1 (o que a Fase 4.15 corretamente recusou). Se a
+distribuição se sobrepuser à das páginas-figura, a v2 é abandonada, não
+ajustada.
+
+### Defeitos abertos registrados nesta fase
+
+1. **Imagem extraída com fundo preto**: `extrair_linhas_nativas` grava
+   `bloco["image"]` cru, sem aplicar o SMask do PDF. 5 de 41 imagens do
+   FDE (3 já em produção antes desta fase). Defeito da Fase 4.14.
+2. **Página em branco reportada como falha de OCR**: nos dois livros do
+   Gil, toda a lista de `RESSALVA` exceto a página 1 (capa) é composta
+   de páginas em branco confirmadas visualmente — 3 de 4 no de 80
+   páginas, **12 de 13** no de 208. O app anuncia "13 de 208 páginas
+   não puderam ser transcritas" e o EPUB recebe 12 marcadores pedindo
+   ao leitor que confira o original onde não há nada. O gate atual
+   (`if paragrafos:`) distingue "nenhum texto" de "algum texto" e não
+   tem como separar página em branco de falha real de OCR. Categoria
+   própria, ainda sem tratamento.

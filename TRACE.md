@@ -1770,3 +1770,279 @@ Os dois `.epub` em `saida/trilha_a/` tiveram
 leitura). Todos os arquivos de conteúdo mantêm mtime original e a
 renderização não muda, mas os `.epub` no disco não são mais
 byte-idênticos aos gerados. Vale saber ao comparar hashes.
+
+# Vigésimo episódio — cobertura de imagem por página: um sinal por página que separa os dois casos conhecidos, sem calibrar o gate de documento
+
+Continuação direta do décimo nono episódio: a hipótese do estrategista
+era que "página sem texto nativo cuja imagem não ocupa a página
+inteira" pudesse ser um sinal **por página** (sem depender da proporção
+de páginas nativas do documento inteiro, que o episódio anterior já
+tinha mostrado não calibrável com o corpus atual). Medição pura, sem
+amostragem: todas as 80 páginas de `001-080.pdf`, todas as 208 de
+`livro_completo_208pg.pdf`, as 7 páginas sem texto nativo do FDE e a 1
+do PEREIRA — script isolado no scratchpad, `foliant.py` não tocado.
+
+**O sinal separa os dois casos conhecidos com folga.** Entre as páginas
+escaneadas do Gil que de fato têm uma imagem (77/80 e 196/208 —
+detalhe abaixo), a cobertura mínima observada é **98,93%** (mediana
+99,83%/99,95%). Nas 6 páginas-figura do FDE (excluída a capa, que tem
+caminho próprio), a cobertura vai de **56,74% a 58,16%**. O intervalo
+vazio entre as duas populações, neste corpus, é de **~40,8 pontos
+percentuais** — nenhuma página escaneada real chega perto do teto das
+páginas-figura. Nenhuma página do Gil com imagem real ficou abaixo de
+95%; nenhuma página-figura do FDE chegou perto de 95%.
+
+**Achado não previsto: 3 páginas verdadeiramente em branco no Gil (12
+na versão de 208 páginas)** — idx 7, 9, 35 (mais 85, 104, 164, 170,
+176, 182, 192, 198, 205 na versão completa). Zero blocos de imagem,
+zero texto, zero `get_drawings()`; renderizada a 50 DPI, a página é
+página em branco de verdade (confirmado visualmente, não suposição —
+provavelmente separador de capítulo/verso em branco do original
+físico). Isso **não** é "cobertura parcial": é ausência total de
+conteúdo, uma categoria própria que um gate por cobertura precisa tratar
+à parte (nem "página inteira é imagem" nem "página é figura parcial").
+Sem essa checagem seriam contadas erroneamente como cobertura baixa (na
+minha primeira passada do script, cobertura=0,0 nessas páginas
+disparava o alarme de "abaixo de 95%" — só a inspeção visual revelou
+que eram brancas de verdade, não uma figura pequena nem uma margem
+cortada).
+
+**PEREIRA (idx 0, a única página sem texto nativo do livro) tem
+cobertura 97,18%** — dentro da faixa de "página inteira escaneada",
+mas *abaixo* do mínimo observado no Gil (98,93%). Com N=1 esse ponto
+isolado não decide nada, mas já avisa que o piso de 98,93% do Gil é
+característico de **um** scanner, não uma constante física — outro
+scanner real (margem cortada, leve rotação, sangria diferente) poderia
+produzir uma página 100%-escaneada com cobertura mais baixa que 98,93%,
+estreitando a folga de 40,8 pontos.
+
+**Nenhuma das páginas medidas teve mais de 1 bloco de imagem
+(`type==1`) ou mais de 1 imagem via `get_images()`.** O teste "página
+com múltiplas imagens" desenhado na tarefa não teve nenhum caso
+positivo para inspecionar — outra lacuna do corpus, não uma conclusão
+de que múltiplas imagens por página seja um caso raro em geral.
+
+> **Correção (vigésimo primeiro episódio).** A frase acima, como
+> escrita originalmente ("nenhuma página, nos 4 documentos medidos"),
+> era mais forte do que o dado sustentava e está corrigida aqui. Esta
+> rodada mediu **todas** as páginas do Gil, mas nos outros dois livros
+> só as páginas **sem texto nativo** (7 no FDE, 1 no PEREIRA) — 296 das
+> 1.401 páginas do corpus. Varrendo as 1.401, existem **5 páginas com 2
+> blocos de imagem** (FDE idx 37 e 170; PEREIRA idx 644, 685 e 710),
+> todas com texto nativo. O enunciado correto é o mais estreito: das
+> 296 páginas sem texto nativo, nenhuma tem mais de um bloco. Não muda
+> nenhuma conclusão (as 5 nunca chegariam a esse critério), mas o
+> escopo da medição não estava declarado.
+
+**Distância às bordas nas 6 páginas-figura do FDE**: margem esquerda e
+direita idênticas em ~88,5pt e topo em 72pt em 5 das 6 páginas (a
+exceção, idx 18/pg-19, tem base diferente — 87,7pt em vez de 72pt,
+imagem mais alta). Os valores repetidos sugerem um template de layout
+do PDF que centraliza a figura numa caixa fixa, não uma medida da
+imagem "encolhendo" organicamente por conteúdo — ou seja, a folga de
+40,8 pontos pode ser em parte um artefato de **como este PDF em
+particular** posiciona figuras, e não generalizável a qualquer PDF com
+página-figura.
+
+**Custo por página**: Gil, 0,7-82ms (média ~9ms) por página — barato,
+mesma ordem de grandeza do décimo sétimo episódio. FDE mais caro
+(41-566ms) por imagens maiores/mais complexas embutidas — ainda
+tratável no orçamento de uma passada de inspeção, mas não desprezível
+num livro de centenas de páginas se o gate rodar página a página no
+documento inteiro.
+
+**Limites, sem minimizar (nenhum foi resolvido por esta medição):**
+- O corpus só tem **uma** obra escaneada de fato (Gil, em 2 arquivos
+  que se sobrepõem nas primeiras 80 páginas — não são 2 amostras
+  independentes de scanner, e sim quase a mesma amostra contada duas
+  vezes). Um scanner diferente pode gerar imagem recortada, em faixas,
+  com margem visível ou rotacionada — nenhum desses casos está
+  representado, e é exatamente o tipo de caso que reduziria a folga de
+  40,8 pontos encontrada aqui.
+- Não há, no corpus, nenhum documento "meio a meio" — mistura real de
+  páginas nativas e páginas escaneadas de texto no mesmo livro. O gate
+  de documento (Fase 4.20/décimo nono episódio) continua sem poder ser
+  calibrado por este experimento, que testa um sinal **por página**,
+  não o gate de documento inteiro.
+- N=6 páginas-figura (o FDE, um livro só) não calibra um corte de
+  produção — é a mesma ressalva do décimo nono episódio, agora com um
+  segundo sinal candidato em vez de um.
+- O achado das páginas em branco mostra que qualquer implementação
+  futura deste sinal precisa de um caso especial explícito para "zero
+  imagem, zero texto" — tratar isso como "cobertura 0%" sem essa
+  distinção classificaria incorretamente uma página em branco legítima.
+
+**Nada implementado** — pedido era medição pura. O sinal "cobertura de
+imagem por página" é promissor como *complemento* ao gate de documento,
+não substituto: ele decide "esta página sem texto nativo é figura ou
+scan", mas não decide "este documento é majoritariamente nativo ou
+escaneado" — a pergunta que o décimo nono episódio já mostrou não
+calibrável com o corpus atual.
+
+# Vigésimo primeiro episódio — página-figura v1: o critério funcionou de primeira, e a validação encontrou um bug que apagava figuras e texto real
+
+Implementação da v1 decidida na rodada anterior: classificar
+página-figura, embutir a imagem e **manter o texto OCR**. A supressão do
+texto (chamada de "D2" na decisão) ficou explicitamente fora deste
+ciclo. O critério, a constante e a declaração de arbitrariedade estão em
+`classificar_pagina_figura` e `COBERTURA_MAXIMA_PAGINA_FIGURA`
+([foliant.py](foliant.py)).
+
+O ponto de arquitetura que organiza tudo: **duas decisões, não uma.**
+"Embutir a imagem" erra para uma imagem redundante; "suprimir o texto
+OCR" erra para a perda da camada de texto (busca, reflow, TTS, ajuste
+de fonte) de uma página real — num Kindle, um bloco de texto como
+imagem é quase ilegível. A v1 faz só a primeira. A assimetria de custo
+que dominou a discussão era, em boa parte, artefato de ter colapsado as
+duas.
+
+## O teste negativo total passou exatamente como previsto
+
+Classificador rodado em **todas** as 1.401 páginas dos 4 documentos
+(lição do décimo sexto episódio: varrer o corpus inteiro, não amostrar):
+
+| livro | páginas | nativas | gate | positivos |
+|---|---|---|---|---|
+| Gil-80 | 80 | 0 | False | 0 |
+| Gil-208 | 208 | 0 | False | 0 |
+| FDE | 210 | 203 | True | **6** |
+| PEREIRA | 903 | 902 | True | 0 |
+
+Os 6 são exatamente os idx 10, 18, 27, 112, 153 e 158 — as
+páginas-figura conhecidas — com cobertura entre 56,74% e 58,16%. Zero
+falsos positivos.
+
+**Verificação extra, porque o gate podia estar mascarando o
+resultado**: com o gate de documento forçado a `True`, o Gil continua
+dando **0 positivos** nas 288 páginas. A geometria sozinha já exclui o
+livro 100% escaneado — o gate não é o que sustenta o critério. Isso
+mudou desde o décimo nono episódio, onde ele fazia todo o trabalho; o
+que mudou foi a faixa de cobertura medida no vigésimo.
+
+## O achado: duas figuras estavam sendo apagadas, e texto real junto
+
+A validação comparou o EPUB do FDE gerado pelo código novo contra um
+gerado pelo código do `HEAD` — não contra o `.epub` velho em
+`saida/trilha_a/`, que estava defasado e teria dado um falso "antes". A
+diferença esperada era "6 páginas ganham `<img>`". Vieram **8**.
+
+As duas extras — `pg-14` (Figure 1-3) e `pg-53` (Figure 2-1) — são
+figuras **nativas**, sem relação com o classificador novo. Estavam
+sendo destruídas silenciosamente, imagem e legenda juntas, desde a Fase
+4.14.
+
+Mecanismo, rastreado até a causa raiz:
+
+1. `primeira_passada` alimenta a análise de cabeçalho repetido com a
+   **primeira linha não-vazia** de cada página.
+2. Numa página que começa com figura, essa primeira linha é o
+   **marcador de imagem**, não texto.
+3. `agrupar_cabecalhos` agrupa por similaridade de palavras. Os
+   marcadores de `pg-14` e `pg-53` carregam suas legendas, que terminam
+   ambas em "...the data engineering lifecycle", e clusterizaram entre
+   si **e com o cabeçalho real "undercurrents"** — grupo de exatamente
+   **3**, o valor de `LIMIAR_CABECALHO_MINIMO`.
+4. Em `construir_html`, a remoção de cabeçalho olha `linhas[0]`, casa o
+   marcador e o descarta. A figura some.
+
+O dano tinha uma segunda ponta, pior e menos visível: ao **completar** o
+grupo de um cabeçalho real, o marcador fez `"undercurrents"` cruzar o
+mínimo e virar "cabeçalho repetido" — e a palavra passou a ser removida
+do início de uma página de texto legítima (`pg-203`). Um artefato
+interno do pipeline estava apagando **texto do livro**.
+
+Vale marcar o que quase escondeu isso: o primeiro comentário que
+escrevi na correção afirmava que "no caminho nativo o marcador nunca
+está no topo". Era falso, e `pg-14`/`pg-53` são a prova. A afirmação
+tinha passado por plausível porque eu raciocinei sobre a ordem de
+leitura dos blocos em vez de medir.
+
+## A correção, nas duas pontas
+
+- `primeira_passada`: o contador de cabeçalho ignora linhas de marcador
+  e usa a primeira linha de **texto** de verdade.
+- `construir_html`: marcadores no topo da página saem da lista **antes**
+  do fatiamento de título/cabeçalho, que fatiam pelo índice 0 e
+  comeriam a imagem no lugar da linha de texto que deveriam remover.
+
+A segunda também é pré-requisito da v1: a página-figura do caminho OCR
+põe o marcador na posição 0 por construção, então sem ela a v1 nasceria
+com o mesmo defeito — e ainda alimentaria o contador com mais 6
+marcadores por livro.
+
+## Validação, contra o código do HEAD
+
+| livro | `<p>` perdidos | `<h2>` alterados | `<img>` novos | texto recuperado |
+|---|---|---|---|---|
+| FDE (210 seções) | **0** | **0** | 8 | 1 (`pg-203`) |
+| PEREIRA (902 seções) | 0 | 0 | 0 | 0 |
+| Gil-80 (80 seções) | 0 | 0 | 0 | 0 |
+| Gil-208 (208 seções) | 0 | 0 | 0 | 0 |
+
+No FDE, os 8 `<img>` são os 6 do classificador mais as 2 figuras
+nativas recuperadas, e 2 `<figcaption>` voltaram junto. **Tudo o que
+mudou, mudou na direção de recuperar conteúdo; nenhuma página perdeu
+nada.**
+
+O Gil-208 entrou na comparação de propósito: `LIMIAR_CABECALHO_MINIMO`
+foi calibrado nele (e no Gil-80), e mexer no contador de cabeçalho
+exigia revalidar onde a calibração nasceu — não bastava o FDE, que é
+nativo. Além das 208 seções idênticas, a checagem mais direta é que a
+análise de cabeçalho produziu os **mesmos 24 clusters** antes e depois,
+e a mesma `RESSALVA` de 13 páginas. Nos livros do Gil isso era o
+esperado por construção (100% escaneados, nenhum marcador de imagem em
+lugar nenhum, gate de documento em `False`), mas "esperado por
+construção" é exatamente o tipo de raciocínio que o décimo sexto
+episódio ensina a não aceitar sem medir. Os 3 fixtures de regressão
+ficaram inalterados.
+
+Protocolo de build completo antes da validação manual (sidecar →
+`build:web` → `tauri build` → reinstalação), com timestamps conferidos
+como posteriores às fontes. O EPUB gerado pelo **sidecar do `.app`
+instalado** saiu idêntico ao gerado por `python3 foliant.py` — zero
+diferenças nas 210 seções.
+
+## Dois defeitos abertos, encontrados e NÃO corrigidos
+
+**1. Imagem extraída com fundo preto (máscara de transparência).**
+`extrair_linhas_nativas` grava `bloco["image"]` cru, sem aplicar o
+SMask do PDF; nas imagens que dependem dele, a área transparente vira
+preta. Medido no FDE: **3 das 33** imagens já iam para produção assim
+antes desta rodada (`pg56_0`, `pg57_0`, `pg76_0`); com as duas figuras
+recuperadas são **5 de 41**. Defeito da Fase 4.14, exposto — não
+causado — por este ciclo.
+
+**2. Página em branco reportada como falha de OCR.** O Gil-80 emite
+`RESSALVA: [1, 8, 10, 36]` e o Gil-208 emite `RESSALVA: [1, 8, 10, 36,
+86, 105, 165, 171, 177, 183, 193, 199, 206]`. Em ambos, **todas as
+páginas da lista exceto a 1 (capa) são as páginas em branco de
+verdade** que o vigésimo episódio confirmou visualmente (zero imagem,
+zero texto, zero `get_drawings()`) — 3 de 4 no livro de 80 páginas, 12
+de 13 no de 208. Ou seja: o app diz ao leitor "13 de 208 páginas não
+puderam ser transcritas e foram marcadas no livro" quando 12 delas são
+simplesmente páginas em branco do original impresso, e o EPUB recebe 12
+marcadores de "[Página N ... não pôde ser transcrita pelo OCR —
+verifique o arquivo original nesta página.]" pedindo ao leitor que
+confira páginas onde não há nada a conferir.
+
+Não há o que transcrever numa página em branco, e o gate atual
+(`if paragrafos:`) não tem como saber a diferença — ele distingue
+"nenhum texto" de "algum texto", e página em branco cai no primeiro
+caso junto com falha real de OCR. É a categoria "página em branco" que
+o vigésimo episódio registrou como precisando de tratamento próprio; a
+v1 não mexe nisso, corretamente — é outro ciclo.
+
+## O que a v1 deliberadamente não resolve
+
+O lixo de OCR continua nas páginas-figura, abaixo da imagem — é a
+metade D2, que exige medir a distribuição de confiança do OCR na classe
+**negativa** (as 288 páginas de texto escaneado real do Gil, que é a
+classe bem povoada) antes de qualquer supressão. A invariante da Fase
+4.20 segue intacta: nenhum texto foi removido.
+
+Condição de falseamento, inalterada e não resolvida por este ciclo: um
+scan recortado ao bloco de texto e centralizado, dentro de um livro
+nativo (anexo digitalizado numa dissertação), passa nos 5 critérios. Em
+v1 isso custa uma `<figure>` redundante e nada mais, porque o texto
+permanece — é exatamente por isso que a v1 pôde ser implementada apesar
+de a condição de falseamento ser plausível.
