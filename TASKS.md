@@ -2194,7 +2194,7 @@ calibração**:
   `convertendo` aparecem sem número ("Tempo estimado: calculando
   conforme processa." / "Pode deixar rodando e usar o computador
   normalmente." sem prefixo de tempo restante) — decisão temporária,
-  não um número inventado.
+  não um número inventado. **Resolvido na Fase 4.15** (ver abaixo).
 - **`com_ressalva`**: implementada por completo (template + renderizador
   `renderizarComRessalva`), mas **sem nenhum gatilho real** — nenhum
   caminho do app chama `transicionarPara("com_ressalva")` hoje, porque
@@ -2205,11 +2205,17 @@ calibração**:
 
   **Atualização (Fase 4.16)**: `com_ressalva` ganhou um gatilho real,
   mas por um critério diferente do que este parágrafo antecipava — não
-  o threshold de confiança do Tesseract (isso continua pendente, ver
-  Fase 4.15 abaixo), e sim a mesma condição binária de "página sem
-  nenhum texto extraído" que motivou o fix do EPUB silenciosamente
-  vazio. As duas pendências continuam genuinamente distintas: tempo
-  estimado e threshold de confiança seguem em aberto.
+  o threshold de confiança do Tesseract, e sim a mesma condição binária
+  de "página sem nenhum texto extraído" que motivou o fix do EPUB
+  silenciosamente vazio.
+
+  **Atualização (Fase 4.15)**: tempo estimado foi calibrado e
+  implementado (ver Fase 4.15 acima) — não é mais um número inventado
+  nem um placeholder sem lógica. O threshold de confiança do Tesseract
+  foi investigado com dado real e **deliberadamente não implementado**
+  (amostra real insuficiente para calibrar um corte, N=1 página de
+  baixa confiança encontrada) — `com_ressalva` continua sem esse
+  segundo gatilho, por decisão explícita, não por pendência esquecida.
 
 **Texto da tela `falha` ajustado para não prometer o que não existe**:
 confirmado por leitura de `foliant.py` (`main()`) que o
@@ -2265,6 +2271,136 @@ cancelar → tentar de novo → converter.
 threshold de confiança do Tesseract (é a Fase 4.15 em si, não esta
 tarefa); qualquer mudança de cor/tipografia/ícone além do já definido no
 design system (Fase 4.13/4.13.1).
+
+## Fase 4.15: calibração de tempo estimado + investigação de threshold de confiança do Tesseract (2026-09-19)
+
+**Objetivo**: a Fase 4.14 deixou "Tempo Estimado" como scaffold sem
+lógica (placeholder fixo "~15 min" em `desktop/src/index.html`) e
+"threshold de confiança do Tesseract" como pendência bloqueando
+`com_ressalva` por esse caminho (a Fase 4.16 depois ativou
+`com_ressalva` por um critério diferente — binário, não confiança —
+então essa pendência específica de confiança continuou aberta até
+agora). Esta fase primeiro MEDE dado real (tempo por página, distribuição
+de `conf`) antes de decidir qualquer coisa — regra do projeto para
+tarefas de calibração — e só então implementa o que o dado sustenta.
+
+**Investigação (medição pura, sem tocar em `foliant.py` na primeira
+etapa)**: script novo `scripts/calibrar_ocr.py` (reexecutável,
+permanece no repo — mesmo padrão de `scripts/pesquisa_recuo*.py`),
+importa `foliant.py` para reaproveitar `RENDER_DPI`/`contar_nativas`
+em vez de duplicar a lógica de decisão nativo/OCR. Roda em amostra
+espalhada (não sequencial) dos PDFs de calibração do repo + as 2
+fixtures de teste (`falha_ocr_ilegivel.pdf`, `ressalva_parcial.pdf`),
+cronometrando separadamente render (200 DPI) e `pytesseract.image_to_data`,
+e extraindo estatísticas de `conf` (filtrando `conf == -1` e entradas
+de texto vazio — confirmado por inspeção manual da distribuição bruta
+de uma página antes de aplicar o filtro em lote, já que `image_to_data`
+retorna `conf` positivo mesmo em linhas sem palavra real). Ambiente de
+cada rodada (versão do Tesseract, `pmset -g therm`, `RENDER_DPI`
+confirmado igual ao de produção) gravado em JSON de metadados junto do
+CSV de dados brutos.
+
+**Resultado completo, com tabelas e achados por percentil**:
+`scripts/calibracao_ocr_resultados/RELATORIO.md`. Resumo:
+- OCR: média 6,08s/página, desvio-padrão 1,96s/página (~32% da média),
+  medido em 40 páginas espalhadas dos 2 livros 100% escaneados do repo
+  (mesma obra em 2 amostras — `samples/001-080.pdf` e
+  `samples/livro_completo_208pg.pdf` — única obra escaneada real
+  disponível, limitação declarada no relatório).
+- Nativa: média ~0,015s/página (57 páginas de 2 livros nativos) —
+  confirma "desprezível" com número.
+- Confiança: 5 das 7 páginas das fixtures sintéticas produziram ZERO
+  palavras com confiança válida (Tesseract não retorna `conf` sobre
+  ruído puro — não acha palavra nenhuma). Único ponto real (não
+  sintético) de confiança baixa: página 113 de `Fundamentals of Data
+  Engineering...pdf`, `conf_media=37`, n=1 — insuficiente para calibrar
+  threshold algum.
+
+**Decisão sobre threshold de confiança: investigado e explicitamente
+NÃO implementado nesta fase** — ver decisão completa e números em
+`ARCHITECTURE.md`, Fase 4.15. Nenhuma mudança em `com_ressalva`/`FALHA`
+além do já validado na Fase 4.16. Registrado como **backlog futuro,
+não bloqueante**: revisitar quando houver amostra maior de scans reais
+problemáticos (não sintéticos).
+
+**Implementação de "Tempo Estimado" (o que o dado sustenta)**:
+- `foliant.py`: `TEMPO_OCR_MEDIA_S = 6.08`, `TEMPO_OCR_DESVIO_S = 1.96`
+  (constantes vindas direto da medição acima) e
+  `estimar_tempo_conversao(escaneadas)`, retornando uma FAIXA
+  (segundos_min, segundos_max) = `escaneadas × (média∓desvio)` — linear
+  no nº de páginas, não desvio agregado por `√n` (só 1 obra escaneada
+  real disponível para medir, não há evidência de independência
+  estatística entre páginas do mesmo livro que justificasse `√n`; ver
+  ARCHITECTURE.md). Nativas ficam fora da conta (custo desprezível,
+  confirmado acima). Resultado (`tempo_estimado_min_s`/`tempo_estimado_max_s`)
+  incluído no JSON de `inspecionar_pdf()` (`INSPECAO:`), sem novo modo
+  de CLI.
+- Formato de exibição: decisão do usuário entre 3 opções apresentadas
+  (valor único aproximado / faixa média±desvio / valor único
+  arredondado por cima) — escolhida a **faixa** ("13–29 min"), por
+  comunicar a incerteza real medida (~32% de desvio) em vez de esconder
+  atrás de uma média só.
+- `desktop/src/index.html`: placeholder fixo "~15 min" trocado por
+  `<span id="ac-tempo-estimado">` vazio, populado em runtime.
+- `desktop/src/main.js`: `formatarTempoEstimado(segundosMin, segundosMax)`
+  formata a faixa em minutos (`"13–29 min"`), com 2 casos-de-borda
+  tratados: total < 60s (poucas páginas escaneadas ou só nativas) vira
+  `"menos de 1 min"` em vez de `"0–0 min"`; faixa que arredonda para o
+  mesmo minuto nos dois extremos vira valor único (`"~1 min"`), não uma
+  faixa vazia (`"1–1 min"`). Chamado de dentro de
+  `popularInspecaoNaTela`, mesma função que já populava nativas/escaneadas.
+
+**Validação**:
+1. `python3 -c "import foliant; foliant.estimar_tempo_conversao(...)"`
+   rodado contra as contagens reais de página dos 4 PDFs de calibração
+   — faixas resultantes (ex.: 208 páginas → 14,3-27,9 min) consistentes
+   com a ordem de grandeza já observada informalmente no pipeline
+   completo (`ARCHITECTURE.md`, Fase 4.5: 36m43s incluindo Calibre/EPUB,
+   não só OCR — a faixa aqui é só a parte de OCR, por isso menor, como
+   esperado).
+2. `formatarTempoEstimado` testado isoladamente em Node com os 4 pares
+   (min,max) reais gerados pelo passo 1, mais os casos de borda (0,0) e
+   `(undefined, undefined)` — todos formatam sem `NaN`/faixa vazia.
+3. **Atualização — build/instalação real e validação visual (2026-09-19,
+   sessão seguinte)**: protocolo de build obrigatório do CLAUDE.md
+   rodado por completo — `scripts/build-sidecar.sh` (sidecar estava
+   desatualizado, timestamp anterior à edição de `foliant.py` desta
+   fase; checksum do binário reconstruído confirmado idêntico ao
+   embutido em `/Applications/Foliant.app` depois do passo seguinte),
+   `pnpm build:web` (confirmado por grep que `dist/main.js`/`dist/index.html`
+   contêm `formatarTempoEstimado`/`ac-tempo-estimado`), `pnpm tauri build`
+   (sucesso — `Foliant.app`/`.dmg` gerados; único erro foi na assinatura
+   do artefato do updater, que exige `TAURI_SIGNING_PRIVATE_KEY`, escopo
+   à parte da Fase 4.9, não usado para instalação/teste manual local) e
+   reinstalação em `/Applications/Foliant.app`.
+
+   Validação visual na janela nativa real (não só harness headless):
+   diferente do que as Fases 4.11/4.13 documentaram (automação de
+   Accessibility/`screencapture` bloqueada pelo `tccd` contra binário
+   sem assinatura), nesta sessão `screencapture` e clique via UI
+   scripting (`System Events`, processo `foliant-desktop`) funcionaram
+   sem bloqueio — não se sabe por que o ambiente divergiu (pode ser
+   diferença de sessão/TCC não determinística, como as próprias fases
+   anteriores especulavam), registrado aqui como observação, não como
+   correção permanente da limitação (pode voltar a falhar em outra
+   sessão). Dois PDFs reais abertos pelo fluxo real do app (seleção de
+   arquivo → `--inspect` real via sidecar → tela `antes_de_converter`):
+   - `Fundamentals of Data Engineering...pdf` (203 nativas + 7
+     escaneadas): "Tempo estimado **menos de 1 min**" — confirma o
+     caso de borda de `formatarTempoEstimado` (total < 60s) na UI real,
+     não só no teste isolado em Node.
+   - `livro_completo_208pg.pdf` (208 escaneadas): "Tempo estimado
+     **14–28 min**" — bate exatamente com a faixa calculada no passo 1
+     (14,3–27,9 min arredondado), confirmando que o dado que chega do
+     sidecar real (`INSPECAO:` com `tempo_estimado_min_s`/`max_s`) e a
+     formatação em `main.js` produzem o resultado esperado ponta a
+     ponta, não só em partes isoladas.
+
+**Fora de escopo, não tocado**: `foliant.py` `main()`/`primeira_passada`
+(o tempo estimado só é calculado em `inspecionar_pdf`, antes da
+conversão real, nunca durante); qualquer critério de `com_ressalva`/
+`FALHA` (Fase 4.16, intocada); as 2 fixtures de teste (usadas só como
+amostra de leitura, não modificadas).
 
 ## Fase 4.16: conversão silenciosamente vazia — detecção por página + ativação de `com_ressalva` (2026-09-11)
 
@@ -2362,6 +2498,191 @@ argumentos do sidecar; calibração de tempo estimado ou de threshold de
 confiança do Tesseract (Fase 4.15, continua em aberto — este critério é
 binário, não usa `conf` do Tesseract em nenhum momento).
 
+## Fase 4.17: supressão de texto duplicado da capa no corpo do EPUB (2026-09-20)
+
+**Contexto**: investigação solicitada para verificar se o texto da
+página 0 (capa), que passa pelo mesmo fluxo nativo/OCR de qualquer
+outra página, estava virando um parágrafo redundante no corpo do EPUB —
+`extrair_capa()` (Fase 4.5) já extrai a *imagem* da página 0 para
+`--cover`, mas nunca tratou o *texto* dela de forma diferente.
+Confirmado com dado real: o EPUB já commitado do PEREIRA (903pg.) tinha
+`<p>Maurício Gomes Pereira Artigos Científicos Como Redigir, Publicar e
+Avaliar</p>` como primeiro parágrafo do corpo, repetindo texto já
+mostrado visualmente pela capa. Confirmado também que `--inspect`
+(autopreenchimento de título/autor) é um caminho totalmente
+independente (usa `doc.metadata`, nunca lê texto de página nenhuma) —
+sem risco de acoplamento entre os dois usos.
+
+**Implementação**:
+1. `foliant.py`, nova função `pagina0_e_duplicata_de_metadados()`
+   (`foliant.py:1065-1093`): compara o texto extraído da página 0,
+   normalizado e por palavra, contra `titulo`/`autor` de `doc.metadata`
+   — retorna `True` só quando o residual depois de remover as palavras
+   de título+autor é `≤15` caracteres. Sem título nem autor no
+   metadado, retorna `False` sem tentar comparar (`foliant.py:1086`).
+2. `foliant.py`, `primeira_passada()` (`foliant.py:1149-1162`): gate
+   duplo — `i == 0 and capa_path is not None and
+   pagina0_e_duplicata_de_metadados(...)`. Quando dispara, grava no
+   cache um registro com `texto=""`, `titulo=None` e
+   `"pagina_capa_suprimida": true`, em vez do texto real extraído —
+   mantém uma linha de cache por página física (preserva o alinhamento
+   1:1 com `id="pg-N"`/`paginas_sem_texto`, Fase 4.16).
+3. `foliant.py`, `construir_html()` (`foliant.py:1257`, `1316`): lê a
+   marca `pagina_capa_suprimida` do registro e, quando presente, pula o
+   `elif` de fallback ("não pôde ser transcrita") sem adicionar a
+   página a `paginas_sem_texto` — única mudança necessária nesta
+   função, mínima e isolada.
+4. `inspecionar_pdf()` e `extrair_capa()`: não alterados — confirmado
+   na investigação que nenhum dos dois precisa mudar.
+
+**Iteração real durante a própria tarefa**: a primeira versão do gate
+usava só `capa_path is not None` (sem a comparação de metadado). Rodar
+os 3 fixtures de regressão de `tests/fixtures/` antes de declarar a
+tarefa concluída expôs o problema na hora: `ressalva_parcial.pdf`
+(página 1 com texto real desenhado sobre imagem) teve esse texto
+apagado silenciosamente do corpo, e `falha_ocr_ilegivel.pdf` deixou de
+disparar `FALHA:sem_texto_legivel` (ambos fixtures têm página 0 como
+imagem de página inteira, sem relação com capa real). Corrigido
+adicionando a segunda camada (`pagina0_e_duplicata_de_metadados`) antes
+de fechar a tarefa — ver TRACE.md, décimo quinto episódio, para o
+relato completo.
+
+**Validação**:
+1. `samples/.../PEREIRA.pdf` (903pg., caso real de duplicação
+   confirmada): `pg-1` do EPUB gerado passou a ficar vazio
+   (`<div id="pg-1" style="height:0pt"></div>`), capa intacta em
+   `titlepage.xhtml` via `cover.jpeg`, extração de imagem de corpo
+   (décimo quarto episódio do `TRACE.md`) intacta em `pg-2`/`pg-3`
+   (`<img src="pg2_0.jpeg">`).
+2. `samples/Fundamentals of Data Engineering...pdf` (210pg., livro de
+   calibração já usado no décimo quarto episódio do `TRACE.md`): texto
+   da página 0 **não**
+   suprimido — corretamente, por ter conteúdo real além de
+   título/autor ("Plan and Build Robust Data Systems", "RAW &
+   UNEDITED"); mesmo comportamento já documentado na Fase 4.5, sem
+   regressão.
+3. `samples/CV_....pdf` (página 0 sem nenhuma imagem embutida,
+   `capa_path is None`): comportamento herdado, corpo com o currículo
+   completo, sem supressão.
+4. Os 3 fixtures de `tests/fixtures/`: `falha_ocr_ilegivel.pdf` volta a
+   abortar corretamente (`FALHA:sem_texto_legivel`, exit 1, sem
+   `.epub`); `ressalva_parcial.pdf` preserva o texto real da página 1 e
+   mantém `RESSALVA:{"paginas_sem_texto": [3, 4]}`; `falha_corrompido.pdf`
+   inalterado.
+5. Todas as execuções acima rodadas via `python3 foliant.py` direto
+   (motor Python, não o `.app` empacotado) — mudança restrita a
+   `foliant.py`, sem tocar em `desktop/src/*`, então o protocolo de
+   build do app (CLAUDE.md) não se aplica aqui. **Risco residual não
+   coberto por esta validação**: o sidecar PyInstaller
+   (`scripts/build-sidecar.sh`) embute uma cópia compilada de
+   `foliant.py` — não foi refeito nem testado via `.app` instalado
+   nesta tarefa; qualquer divergência entre o `.venv` e o sidecar
+   compilado (não esperada, mas não descartada) só apareceria num
+   rebuild real.
+
+**Risco residual explícito, não resolvido por falta de amostra**:
+comparar com metadado é mais forte que checar só `capa_path`, mas
+continua havendo um caso não coberto pela amostra atual (PEREIRA: capa
+pura; FDE: capa com subtítulo real, corretamente não suprimida) — um
+PDF com metadado de título/autor preenchido, onde a página 0 misture
+capa com conteúdo de leitura genuíno que colida por acaso com as
+palavras do título/autor, dentro do limiar de `≤15` caracteres
+residuais. Ver TRACE.md, décimo quinto episódio, para a formulação
+completa.
+
+**Fora de escopo, não tocado**: `desktop/src/*`, sidecar PyInstaller,
+`inspecionar_pdf()`, `extrair_capa()`.
+
+## Fase 4.19: fecha lacuna de validação end-to-end via sidecar empacotado (2026-09-20)
+
+> **Nota de numeração (corrigido na Fase 4.20).** Esta fase estava
+> numerada como "4.18", colidindo com `ARCHITECTURE.md:3323` ("Fase
+> 4.18: investigação de detecção de tabela"), que é uma fase diferente.
+> A investigação de tabela é cronologicamente anterior — esta própria
+> seção a cita, logo abaixo, como já concluída — então ela mantém o
+> número 4.18 e esta passou a ser 4.19. Nenhum outro arquivo
+> referenciava "Fase 4.18", então a renumeração não quebrou cross-refs.
+
+Fecha exatamente o risco residual deixado em aberto na Fase 4.17 ("não
+foi refeito nem testado via `.app` instalado") e nas Fases 13-17 do
+`TRACE.md` (aspas/nota de rodapé, imagens de corpo, dedup de capa,
+investigações de tabela/imagem escaneada) — todas essas correções só
+tinham rodado via `python3 foliant.py` direto, nunca através do
+sidecar PyInstaller reconstruído nem do `.app` instalado.
+
+**Protocolo de build completo executado** (CLAUDE.md/TRACE ep. 9):
+1. `scripts/build-sidecar.sh` — confirmado necessário por timestamp:
+   `foliant.py` editado 20/09 02:49, sidecar/dist/`.app` anteriores
+   eram de 19/09 20:31-20:35 (mais de 6h antes) — o `.app` até então
+   instalado não continha nenhuma das correções 13-17.
+2. `pnpm build:web` + `pnpm tauri build` — bundle recompilado sem
+   erros de build (só a etapa de assinatura do updater falhou, por
+   `TAURI_SIGNING_PRIVATE_KEY` ausente — não afeta o `.app`/`.dmg`
+   gerados, que ficaram prontos antes dessa etapa).
+3. `/Applications/Foliant.app` reinstalado; timestamp confirmado
+   (17:45:04) posterior à última edição de `foliant.py` (02:49:36).
+
+**Tentativa de captura de tela do app real**: `screencapture`/
+`osascript` contra o `.app` recém-aberto reproduziram exatamente a
+limitação já documentada nas Fases 4.1-4.3 — `osascript`/System Events
+enxerga metadado da janela (título "Foliant", posição, tamanho) mas
+`screencapture` não captura os pixels da janela nem aparece em captura
+de tela inteira. Confirmado de novo nesta rodada, não presumido.
+Decisão (acordada com o usuário antes de prosseguir): validar os 6
+pontos invocando diretamente o binário sidecar real
+(`/Applications/Foliant.app/Contents/MacOS/foliant-core[-inspect]`)
+com os mesmos argumentos que `desktop/src/main.js` monta, em vez de
+`python3 foliant.py` — cobre o risco real desta tarefa (o freeze do
+PyInstaller mudar comportamento), mas não produz confirmação visual da
+UI renderizada.
+
+**Os 6 pontos, todos rodados através do binário empacotado**:
+1. **Aspas/nota de rodapé (PEREIRA)** — `pg-801`: aspa de abertura
+   curva `"Muitas regras..."` intacta (bug original do décimo segundo
+   episódio, "aspa de abertura apagada", confirmado corrigido). `pg-41`:
+   marcador de nota de rodapé `*Reúne instruções...` preservado (não
+   descartado por `_RE_RUIDO_INICIAL`).
+2. **Imagens de corpo (PEREIRA)** — `pg-75`: `<figure><img
+   src="pg75_0.jpeg"/><figcaption>Figura 4.1 Evolução da estrutura
+   IMRD...</figcaption></figure>` presente e correto.
+3. **Dedup de capa (PEREIRA)** — `pg-1` vazio (`<div id="pg-1"
+   style="height:0pt"></div>`), capa intacta em `titlepage.xhtml`
+   separado — exatamente o comportamento fechado no décimo quinto
+   episódio.
+4. **Tempo Estimado** — `foliant-core-inspect` no PEREIRA retornou
+   `tempo_estimado_min_s: 4.12, tempo_estimado_max_s: 8.04`
+   (consistente com `TEMPO_OCR_MEDIA_S=6.08 ± TEMPO_OCR_DESVIO_S=1.96`
+   para as 1 página escaneada do livro, Fase 4.15). Confirmado que
+   `desktop/src/main.js` (`popularInspecaoNaTela`) usa essas chaves
+   diretamente, sem transformação intermediária. **Cobertura parcial,
+   registrada explicitamente**: valida que o binário empacotado emite
+   o dado certo e que o código teria o dado certo para renderizar — não
+   valida a tela renderizada de verdade (bloqueado pela mesma limitação
+   de captura de tela acima), diferente dos outros 5 pontos, que são
+   inspeção direta do arquivo `.epub` gerado.
+5. **3 fixtures de regressão** — via binário empacotado:
+   `falha_ocr_ilegivel.pdf` → `FALHA:{"motivo": "sem_texto_legivel"}`,
+   exit 1, nenhum `.epub`; `ressalva_parcial.pdf` →
+   `RESSALVA:{"paginas_sem_texto": [3, 4]}`, exit 0 — idêntico ao
+   baseline já documentado (Fase 4.17); `falha_corrompido.pdf` →
+   `FALHA:{"motivo": "estrutura_invalida", ...}`, exit 1, nenhum
+   `.epub`.
+6. **Metadado de idioma** — `ressalva_parcial.pdf` com `--lang eng`:
+   `content.opf` → `<dc:language>en</dc:language>`; HTML →
+   `lang="en"`/`xml:lang="en"` — consistentes entre si (décimo primeiro
+   episódio).
+
+**Resultado**: nenhuma divergência encontrada entre o comportamento já
+validado via CLI (`python3 foliant.py`) e o comportamento via sidecar
+PyInstaller empacotado, nos 6 pontos testados. Risco residual das
+Fases 13-17 ("nunca testado via `.app` real") fechado, com a ressalva
+explícita do item 4 acima (dado emitido validado, renderização da UI
+não).
+
+**Fora de escopo, não tocado**: Task A (Tesseract auto-contido,
+backlog abaixo) — esta tarefa era pré-requisito para abri-la, não o
+início dela.
+
 ## Backlog — Fase 5.x (pré-requisito para primeira distribuição a usuários reais)
 
 **Item**: Empacotar Tesseract completo auto-contido (Opção 1, investigação
@@ -2376,3 +2697,457 @@ já feita)
 - **Referência**: investigação completa já documentada (~67MB, sem
   bloqueio de licença, `--onefile` terá I/O extra por execução — avaliar
   `--onedir` se isso se mostrar perceptível).
+
+## Retroativo: extração de imagem de corpo em PDF nativo (décimo quarto episódio do `TRACE.md`)
+
+> **Entrada retroativa, criada na Fase 4.20.** Esta é a única feature
+> **implementada** entre os três episódios de investigação de imagem
+> (14º, 16º, 17º) e era a única sem registro em `TASKS.md` — a
+> evidência vivia só no `TRACE.md` e nos comentários longos de
+> `foliant.py`. O trabalho original não foi refeito; o que segue
+> consolida o que já estava registrado.
+
+**Objetivo**: extrair diagramas/gráficos do corpo do texto para o EPUB,
+que até então só recebia a capa. Gap medido antes da correção
+(`TRACE.md:1044-1052`): 39 páginas com imagem no FDE e 37 no PEREIRA,
+nenhuma chegando ao EPUB.
+
+**Escopo**: apenas o caminho de **texto nativo**. Em PDF escaneado,
+blocos `type == 1` devolvem a página inteira — não há como distinguir
+"figura dentro da página" de "a página é a imagem"
+([foliant.py:656-661](foliant.py#L656-L661)). Decisão de escopo
+explícita, não omissão.
+
+**Mecanismo**: blocos `type == 1` de `get_text("dict")` já vêm na mesma
+lista ordenada dos blocos de texto, em ordem de leitura, com os bytes
+embutidos — sem `get_images()`/`extract_image()` separado. Cada imagem
+aceita é gravada em streaming e entra na sequência como marcador
+sentinela `"\x00IMG\x00"` ([foliant.py:588](foliant.py#L588)), nunca
+como texto.
+
+**Critério de validação e resultado**:
+1. Filtro de tamanho `LARGURA_MINIMA_IMAGEM_CORPO_PT = 20.0`
+   ([foliant.py:617](foliant.py#L617)) — calibrado contra achado real
+   (PEREIRA pg. 645: 2 imagens de 18x31px exibidas a 6,8x12pt, glifos
+   decorativos de borda de tabela, inspecionados visualmente). Menor
+   gráfico real validado: pg. 75, 273,8pt de altura. Resultado: em FDE
+   (210pg.) + PEREIRA (903pg.), filtrou exatamente os 2 ícones
+   decorativos, 0 falsos positivos/negativos.
+2. Heurística de legenda `_RE_LEGENDA_FIGURA`
+   ([foliant.py:604](foliant.py#L604)) — validada em 2 casos reais:
+   FDE pg. 13 ("Figure 1-2. Data tools in 2012 vs 2021") e PEREIRA
+   pg. 75 ("Figura 4.1 Evolução da estrutura IMRD..."). Risco residual
+   declarado: legenda **antes** da imagem, ou separada por texto
+   intermediário, não casa.
+3. Zero regressão no livro 100% escaneado e nos 3 fixtures de
+   `tests/fixtures/`.
+4. Reconfirmado via sidecar empacotado na Fase 4.19: `pg-75` com
+   `<figure><img src="pg75_0.jpeg"/><figcaption>Figura 4.1 ...` correto.
+
+**Dois bugs reais achados só na validação ponta a ponta** (nenhum
+aparecia em teste unitário ou leitura de código):
+1. **Realpath do diretório temporário** — `$TMPDIR` no macOS fica sob
+   `/var`, symlink para `/private/var`. `--cover` funcionava (path
+   absoluto no argv); `<img src>` falhava **silenciosamente** (Calibre
+   exit 0, tag no HTML, arquivo ausente do `.epub`). Fix:
+   `tmp_dir = Path(os.path.realpath(tmp))`
+   ([foliant.py:1465-1466](foliant.py#L1465-L1466)).
+   **Risco residual ainda aberto: nunca validado em Linux.**
+2. **Contaminação da mediana de recuo** — o marcador entra com
+   `left`/`tamanho` fictícios `0.0`, e incluí-los puxava a mediana da
+   página, desclassificando o início de parágrafo de linhas de texto
+   reais da mesma página. Fix duplo
+   ([foliant.py:809-815](foliant.py#L809-L815)): medianas só sobre
+   linhas de texto real, e captura da legenda direto dos blocos crus
+   **antes** da fusão de parágrafos.
+
+**Lacuna fechada depois, na Fase 4.20**: a extração foi validada até o
+HTML e até a presença do arquivo no `.epub`, mas o **CSS de
+apresentação da figura no e-reader** nunca tinha sido verificado.
+
+## Retroativo: investigação de detecção de imagem em página escaneada (décimo sétimo episódio do `TRACE.md`)
+
+> **Entrada retroativa, criada na Fase 4.20.** Investigação sem
+> implementação, sem registro prévio em `TASKS.md`. A conclusão foi
+> **revisada** na Fase 4.20 — ver a ressalva ao final.
+
+**Objetivo**: encontrar um sinal real (não heurística inventada) para
+localizar região de figura numa página que só existe como raster.
+
+**Critério de validação e resultado**:
+1. Premissa original (`conf == -1` marca região não-textual):
+   **falsa**. `conf == -1` nunca ocorre em `level == 5` (palavra), só
+   nos níveis agregados 1-4, presentes em toda página. 0 exceções em
+   208 páginas.
+2. `conf < 10` isolado: **não discrimina**. 84/208 páginas (40%) têm
+   ≥1 palavra `conf<10`; a pg. 126 (prosa pura) tem 17, mais que a
+   página com figura real (7).
+3. `conf < 10` + `height > 100px` (a 200 DPI): **0 falsos positivos em
+   207 páginas negativas**, 4 palavras qualificadas na pg. 178.
+4. Custo: `pixmap.crop()` ~12ms; gravar ~0,7s em PNG, ~0,14s em JPEG.
+
+**Decisão original**: não implementar — N=1 do lado do recall.
+
+**Ressalva adicionada na Fase 4.20 (revisão da conclusão)**: o
+mecanismo hipotetizado no episódio original ("o Tesseract funde
+múltiplas linhas de marcas não-textuais numa bbox de palavra alta")
+está **errado**. Inspeção do TSV bruto da pg. 178 mostra que as
+palavras altas de baixa confiança são os **rótulos do gráfico
+impressos rotacionados 90°**, lidos de lado (`'opseongadsa'` =
+"Especificação" espelhada; largura 24-55px em todos os casos). O
+limiar é um **detector de texto rotacionado**, não de figura. Os 0
+falsos positivos continuam válidos; o que muda é que o recall é
+estruturalmente limitado a figuras que contenham texto rotacionado —
+não seria corrigido por mais amostras do mesmo tipo visual. Detalhe no
+décimo oitavo episódio do `TRACE.md`.
+
+## Fase 4.20: validação do caminho de entrega de figura + CSS de imagem no EPUB (2026-09-20)
+
+**Contexto**: a extração de imagem de corpo (décimo quarto episódio do
+`TRACE.md`) foi validada até o HTML gerado e até a presença do arquivo
+dentro do `.epub`, mas **a apresentação da figura no e-reader nunca foi
+verificada**. Esta fase fecha essa lacuna. Decidida em vez da detecção
+de figura em página escaneada porque o corpus tem N=0 amostras do
+caso-alvo (ver `ARCHITECTURE.md`, Fase 4.20).
+
+**Objetivo**: medir o impacto real das figuras no EPUB e verificar se
+elas são apresentadas corretamente — sem introduzir detector, limiar ou
+dependência nova.
+
+### Achado 1 — o EPUB não tinha nenhuma contenção de largura de imagem
+
+`HTML_HEADER` ([foliant.py:148-166](foliant.py#L148-L166)) não tinha
+**nenhuma** regra para `img`, `figure` ou `figcaption`. Medido no EPUB
+real gerado antes da correção: o Calibre sintetiza por conta própria
+
+```css
+.calibre4 { height: auto; width: auto; }
+```
+
+`width: auto` é largura intrínseca — sem `max-width`, uma imagem mais
+larga que a viewport transborda. Não é hipótese: é a ausência
+verificada de qualquer regra de contenção nas duas folhas de estilo do
+`.epub` (`stylesheet.css` e `page_styles.css`).
+
+### Achado 2 — impacto real no tamanho do EPUB (medido)
+
+| | FDE (210pg.) | PEREIRA (903pg.) |
+|---|---|---|
+| EPUB final | 2451KB | 3205KB |
+| imagens de corpo | 33 arq, **1889KB (77,1%)** | 38 arq, **1848KB (57,7%)** |
+| capa | 312KB (12,7%) | 93KB (2,9%) |
+| texto + markup + CSS | 250KB (10,2%) | 1263KB (39,4%) |
+| codec | 33 PNG | 38 JPEG |
+| larguras (min/mediana/máx) | 318 / 653 / **2048**px | 344 / 800 / 965px |
+| acima de 1600px | **4 de 33** | 0 de 38 |
+
+Delta antes/depois para o PEREIRA, usando o `.epub` versionado no
+commit `5b39443` (gerado antes da extração de imagem, só com
+`cover.jpeg`): **1395KB → 3205KB, +1809KB (+130%)**. Bate com os 1848KB
+de imagens de corpo medidos de forma independente — a diferença do
+EPUB é praticamente toda figura.
+
+Conclusão: o custo é real mas aceitável para download único e leitura
+offline. O codec vem do PDF original (o caminho nativo grava os bytes
+embutidos sem recomprimir), e é por isso que o FDE é todo PNG e pesa
+mais por imagem que o PEREIRA.
+
+**Os 4 arquivos acima de 1600px estão todos no FDE** (`pg172_0.png`,
+`pg174_0.png`, `pg164_0.png` a 2048px; `pg185_0.png` a 1814px) — é ali
+que o transbordo se manifesta, não na `pg-13` (1128px) nem em nenhuma
+figura do PEREIRA.
+
+### Correção aplicada
+
+Três regras em `HTML_HEADER`, com o comentário de evidência logo acima:
+
+```css
+img { max-width: 100%; height: auto; }
+figure { margin: 1em 0; text-align: center; page-break-inside: avoid; }
+figcaption { font-size: 0.9em; text-indent: 0; }
+```
+
+`figcaption` precisa de `text-indent: 0` explícito porque a regra `p`
+acima aplica `1.2em` incondicionalmente.
+
+### Critério de validação e resultado
+
+1. **O CSS sobrevive ao achatamento do Calibre** — verificado no `.epub`
+   regenerado, não assumido. FDE: `.calibre5 { height: auto;
+   max-width: 100%; width: auto; }` aplicado ao `<img>`; `.calibre4` =
+   regras de `figure`; `.calibre6` = `figcaption`. PEREIRA: mesmas
+   regras sob `.calibre1`/`.calibre5`/`.calibre6`.
+2. **Estrutura semântica intacta** — `pg-172` do FDE e `pg-75` do
+   PEREIRA mantêm `<figure><img/><figcaption>` com a legenda correta e
+   separada do parágrafo seguinte (o Bug 2 do 14º episódio não voltou).
+3. **Tamanho inalterado** — 2451KB e 3205KB antes e depois; o CSS é
+   irrelevante no total.
+4. **3 fixtures reconfirmados** contra `tests/fixtures/README.md`:
+   `falha_ocr_ilegivel.pdf` → `FALHA:{"motivo": "sem_texto_legivel"}`,
+   **exit 1**, sem `.epub`; `ressalva_parcial.pdf` →
+   `RESSALVA:{"paginas_sem_texto": [3, 4]}`, **exit 0**, `.epub`
+   gerado; `falha_corrompido.pdf --inspect` →
+   `INSPECAO_ERRO:{"erro": "sem_paginas"}`.
+
+### Desvio observado, não corrigido
+
+`figcaption` foi declarado a `0.9em` e o Calibre emitiu **`0.75em`** —
+ele reescala tamanhos de fonte relativos (o `h2` de `1.4em` virou
+`1.41667em`, na direção oposta). O resultado continua legível e menor
+que o corpo, que era a intenção; registrado para não ser redescoberto
+como bug.
+
+### Risco residual declarado
+
+**A inspeção em e-reader Android real não foi executada nesta fase** —
+não há acesso ao dispositivo a partir do ambiente de desenvolvimento.
+O que está provado é o nível de artefato: antes não havia contenção
+nenhuma e havia imagens de 2048px; depois `max-width: 100%` está
+presente no `.epub` final. **A confirmação visual de que o transbordo
+existia e sumiu continua pendente** e depende de abrir
+`saida/trilha_a/fde.epub` no tablet, nas páginas `pg-164`, `pg-172` e
+`pg-174`. Também segue sem validação a legibilidade da figura a 200 DPI
+em tela de tablet — que é uma pergunta do caminho OCR, ainda não
+aberto, já que as figuras nativas não passam por render.
+
+### Validação via sidecar empacotado, e uma armadilha de verificação
+
+Protocolo de build completo executado (`scripts/build-sidecar.sh` →
+`pnpm build:web` → `pnpm tauri build`), com a ordem de timestamps
+conferida como manda o `CLAUDE.md` — não só "o `.app` é recente", mas
+**posterior à edição do fonte**: `foliant.py` 19:00:33 → sidecar
+19:15:25 → `Foliant.app` 19:21:21 → `.dmg` 19:21:50.
+
+**Armadilha encontrada na verificação**: o primeiro teste do sidecar
+empacotado rodou contra `tests/fixtures/ressalva_parcial.pdf` e o
+`stylesheet.css` do `.epub` gerado **não continha `max-width`** — o que
+parecia sidecar desatualizado (o defeito exato do nono episódio). Não
+era. O `ressalva_parcial.pdf` não tem nenhuma imagem, e o **Calibre
+remove regras de CSS não utilizadas** — `img`/`figure`/`figcaption`
+eram podadas por não haver elemento correspondente no documento.
+
+Reteste com um PDF que de fato contém figura (fatia das páginas 73-78
+do PEREIRA, gerada com `insert_pdf`, contendo a `Figura 4.1`), rodado
+pelo **binário empacotado**, não pelo `foliant.py`:
+
+```
+.calibre2 { page-break-inside: avoid; text-align: center; margin: 1em 0; }
+.calibre3 { height: auto; max-width: 100%; width: auto; }
+.calibre4 { font-size: 0.75em; text-indent: 0; }
+imagens: ['pg3_0.jpeg']
+```
+
+Lição registrada: **ausência de uma regra de CSS num EPUB do Calibre
+não prova que o código que a emite não rodou** — prova, no máximo, que
+o documento não tinha elemento que a usasse. Qualquer verificação
+futura de CSS precisa de um documento que exercite a regra.
+
+### Tentativa de validação visual no ebook-viewer do Calibre: instrumento insensível à variável
+
+Aproximação de desktop tentada antes da validação em e-reader Android
+real: `ebook-viewer` do Calibre, janela redimensionada para **800x740
+logical** (≈ tablet em retrato), comparando `baseline/fde.epub` (antes
+do CSS) e `fde.epub` (depois) nas páginas `pg-164`, `pg-172` e
+`pg-174` — as três que têm imagem acima de 1600px.
+
+**Resultado: o teste não discrimina.** A largura renderizada da figura
+é **idêntica ao pixel** nos dois EPUBs, nas três páginas:
+
+| página | baseline | com `max-width` |
+|---|---|---|
+| pg-164 | 736px lógicos (esq 84, dir 1556 físicos) | **736px, mesmos limites** |
+| pg-172 | 718px lógicos (esq 120, dir 1556) | **718px, mesmos limites** |
+| pg-174 | 718px lógicos (esq 120, dir 1556) | **718px, mesmos limites** |
+
+Nenhuma das três transbordava no baseline, apesar de `pg164_0.png`,
+`pg172_0.png` e `pg174_0.png` terem 2048px de largura contra 800px de
+viewport.
+
+**Mecanismo confirmado empiricamente** (não por leitura do código do
+Calibre): reduzindo a janela para 400px lógicos, a mesma figura passa
+de 718px para **356px** — escala proporcional à viewport. Ou seja, **o
+leitor do Calibre ajusta imagem à largura da coluna por conta própria,
+independente do CSS do livro**, e por isso não consegue distinguir
+"sem contenção nenhuma" de `max-width: 100%`.
+
+**Conclusão metodológica**: o `ebook-viewer` do Calibre é um instrumento
+**insensível à variável sob teste**. Um "não transborda" medido nele
+não é evidência de que o CSS funciona, nem de que o defeito não
+existia — ele mede a acomodação do próprio leitor, não o EPUB. Não é
+falha de execução do teste; é o instrumento errado para esta pergunta.
+
+Isso **não invalida** a correção: o defeito continua provado no nível
+do artefato (nenhuma regra de contenção existia nas folhas de estilo do
+`.epub`, com imagens de até 2048px), e leitores que **não** fazem essa
+acomodação — que é justamente o risco — continuariam transbordando. Mas
+significa que a validação pendente exige um leitor que respeite o CSS
+do livro, e que a aproximação em desktop aqui usada não substitui o
+e-reader Android real.
+
+Capturas em `saida/trilha_a/comparacao_pg{164,172,174}.png` (antes/
+depois lado a lado, com a borda direita da janela marcada).
+
+### Validação em motor que respeita o CSS do livro (Chrome headless): defeito confirmado e corrigido
+
+Depois de o `ebook-viewer` do Calibre se mostrar insensível à variável
+(seção anterior), a validação foi refeita num motor que aplica o CSS do
+documento sem acomodação própria: **Chrome 153 headless**, janela
+800x740, abrindo diretamente os XHTML dos dois `.epub` descompactados.
+
+**Teste do instrumento, feito ANTES de concluir qualquer coisa** — um
+HTML mínimo com `<img>` de 2048px e nenhum CSS:
+
+```
+MEDIDA natural=2048 rendered=2048 viewport=785 scrollWidth=2048
+```
+
+O Chrome **não** redimensiona por conta própria: renderiza a 2048px
+num viewport de 785px e gera overflow horizontal. Instrumento válido
+para esta pergunta, ao contrário do leitor do Calibre.
+
+**Medição nas 3 páginas** (`livro_split_163/171/173.html`, medidas via
+`getBoundingClientRect()` injetado numa cópia do arquivo — a injeção
+adiciona um `<pre>` ao final e não altera CSS nem layout da imagem):
+
+| página | baseline | com `max-width: 100%` |
+|---|---|---|
+| pg-164 | rendered **2048px**, viewport 785, `scrollWidth` **2095** | rendered **787px**, viewport 800, `scrollWidth` **800** |
+| pg-172 | rendered **2048px**, `scrollWidth` **2095** | rendered **787px**, `scrollWidth` **800** |
+| pg-174 | rendered **2048px**, `scrollWidth` **2095** | rendered **787px**, `scrollWidth` **800** |
+
+`scrollWidth` 2095 contra viewport 785 é overflow horizontal real de
+**2,7x** — e o viewport cai de 800 para 785 no baseline exatamente
+porque a barra de rolagem horizontal aparece. Nas capturas do baseline
+só cerca de um terço do diagrama é visível; o resto está cortado à
+direita, com barra de rolagem no rodapé.
+
+Os 787px do caso corrigido são `800 - 2 x 5pt` de `margin` do
+`body.calibre` (6,67px de cada lado) — ou seja, a figura ocupa a
+largura útil inteira, sem transbordar.
+
+As capturas também confirmam visualmente as outras duas regras: a
+legenda aparece centralizada sob a figura e em corpo menor
+(`figure { text-align: center }` + `figcaption { font-size }`).
+
+**Conclusão**: o defeito era real e está corrigido. Capturas
+antes/depois em `saida/trilha_a/chrome_pg-{164,172,174}.png`.
+
+**Risco residual que permanece**: Chrome é um motor de renderização
+correto, não um e-reader. Ele prova que o CSS faz o que deveria fazer
+num motor que respeita o documento; não prova comportamento no RMSDK,
+no leitor nativo de um Kindle/Kobo, nem no app Android específico do
+público-alvo. Leitores que acomodam sozinhos (como o Calibre) já
+estavam bem antes e seguem bem; os que respeitam o CSS passaram de
+quebrado para correto. Não há cenário conhecido em que a mudança piore
+o resultado.
+
+## Fase 4.21: investigação dos 4 defeitos vistos em Kindle real (2026-09-21)
+
+**Contexto**: primeiro teste do EPUB num e-reader de verdade (Kindle
+10, via Send to Kindle — a Amazon reconverte o EPUB antes de exibir).
+Investigação sem correção, por pedido explícito. Relato narrativo
+completo no décimo nono episódio do `TRACE.md`.
+
+**Arquivos exatos usados no teste** (para reprodução manual):
+
+| papel | caminho absoluto | gerado em |
+|---|---|---|
+| PDF de origem | `/Users/thiagoalmeida/Documents/PROJECTS/foliant/samples/Fundamentals of Data Engineering (Third Early Release) -- Joe Reis & Matt Housley - cópia.pdf` | 2026-07-09 04:06:38 |
+| EPUB corrigido | `/Users/thiagoalmeida/Documents/PROJECTS/foliant/saida/trilha_a/fde.epub` | conteúdo 2026-09-20 19:04 |
+| EPUB baseline | `/Users/thiagoalmeida/Documents/PROJECTS/foliant/saida/trilha_a/baseline/fde.epub` | conteúdo 2026-09-20 18:57 |
+
+`foliant.py` 2026-09-20 19:00:33, sidecar 19:15:25 — o `fde.epub` tem
+`max-width` no `stylesheet.css` e o baseline não, confirmando que o
+arquivo testado é o da versão mais recente, não um artefato antigo.
+
+**Ressalva sobre os timestamps**: o mtime dos dois `.epub` no disco é
+2026-09-21 20:47/20:57, posterior à geração, porque o `ebook-viewer` do
+Calibre gravou `META-INF/calibre_bookmarks.txt` dentro deles durante a
+validação da Fase 4.20. Todas as entradas de conteúdo mantêm mtime de
+2026-09-20; a renderização não muda.
+
+**Mapa tela do Kindle → EPUB → PDF**:
+
+| trecho | arquivo no EPUB | id | idx do PDF |
+|---|---|---|---|
+| "Every vendor will say their product is going to" | `livro_split_110.html` | `pg-111` | 110 |
+| "Figure 3-1. Matt Turck's" / "Figure 3-2" | `livro_split_113.html` | `pg-114` | 113 |
+| "They currently" | `livro_split_124.html` | `pg-125` | 124 |
+| "cloud services such as" | `livro_split_125.html` | `pg-126` | 125 |
+| "Figure 3-4" | `livro_split_136.html` | `pg-137` | 136 |
+
+A figura em si (MAD Landscape) é o **idx 112 / `pg-113`**; a legenda
+"Figure 3-1" está na página seguinte, idx 113.
+
+**Classificação dos 4 defeitos** (Chrome sobre o `.epub` descompactado,
+instrumento validado na Fase 4.20):
+
+| # | defeito | origem | evidência |
+|---|---|---|---|
+| 1 | página-figura vira texto OCR lixo, legenda grudada | **Foliant** | `pg-113`: 1964 chars de lixo, zero `<img>` |
+| 2 | números de nota soltos | **Foliant** | 40 `<p>` só-dígito; bloco fora de ordem visual |
+| 3 | frase cortada na virada de página | **Foliant** | 94/210 seções (44,8%) |
+| 4 | legenda justificada | **Send to Kindle / Kindle** | `figcaption.textAlign=center` no EPUB |
+
+**Amostra nova, real: N=7 páginas-figura.** FDE tem 7 páginas sem texto
+nativo (idx 0, 10, 18, 27, 112, 153, 158) e **todas as 7 são
+páginas-figura** (capa, screenshot, pirâmide, gráfico de barras, MAD
+Landscape, 2 diagramas). Todas com exatamente 1 bloco `type==1`;
+cobertura 100% (capa) e 56,7-58,2% (as outras 6).
+
+**Teste negativo do critério geométrico, feito antes de qualquer
+proposta**: aplicado página a página nos livros 100% escaneados, "sem
+texto nativo + bloco de imagem dominante" acerta **77/80** (Gil 80p) e
+**196/208** (Gil 208p) — ou seja, classificaria quase todo scan real
+como página-figura, e cada falso positivo custa o OCR de uma página
+inteira de texto. O gate de documento ("majoritariamente nativo") é o
+que sustenta o critério inteiro.
+
+**E o gate não é calibrável com o corpus atual**: os extremos
+disponíveis são 0% de páginas nativas (Gil) e 96,7% (FDE, 203/210), sem
+nenhum livro intermediário. Qualquer limiar entre 0 e 96,7 separa os
+casos conhecidos igualmente bem — a amostra não escolhe número nenhum.
+Nada implementado, pelo mesmo motivo do décimo sexto episódio.
+
+**Passo 5 (legenda) — condição testada e FALSA, correção não aplicada.**
+O pedido era aplicar `text-align: center` explícito **se** o
+`figcaption` herdasse `justify`. Medição no Chrome
+(`pg-114` do EPUB gerado): `body.textAlign=start`,
+`figure.textAlign=center`, `figcaption.textAlign=center`. A legenda já
+sai centralizada e o corpo nem é justificado — a justificação é da
+conversão da Amazon ou da configuração do Kindle. `foliant.py` não foi
+alterado nesta fase.
+
+Fica anotado que o `center` é **herdado** de `figure`, não declarado no
+`figcaption` ([foliant.py:171-173](foliant.py#L171-L173)): se um
+conversor descartar o elemento `figure`, a herança se perde. Declarar a
+regra direto no `figcaption` seria robustez barata — mas é hipótese
+sobre o conversor, não medição, e por isso não foi feito.
+
+**Pendências abertas, sem decisão**: (a) conciliar a invariante da Fase
+4.20 com o caso página-figura, onde o texto OCR a preservar é lixo;
+(b) o gate de `com_ressalva` (`if paragrafos:`,
+[foliant.py:1330](foliant.py#L1330)) distingue "nenhum texto" de "algum
+texto", não texto de lixo — é a mesma lacuna que a Fase 4.15 registrou
+ao adiar o threshold de confiança, e esta página é o caso N=1 dela;
+(c) fusão de parágrafo entre páginas, sem a qual remover a quebra
+forçada não corrige a frase cortada.
+
+## Retroativo: correção de aspas e marcador de nota em `_RE_RUIDO_INICIAL` (décimo terceiro episódio do `TRACE.md`)
+
+> **Entrada retroativa, criada na Fase 4.20.** Implementação do fix
+> identificado (mas não aplicado) na investigação do décimo segundo
+> episódio; sem seção própria até agora.
+
+**Mudança**: aspas (retas e curvas) saíram por completo da classe de
+ruído decorativo removida do início de linha; `*` só é tratado como
+ruído quando não está colado a uma palavra (`(?!\w)`), preservando o
+marcador de nota de rodapé. `_RE_RUIDO_INICIAL =
+re.compile(r'^(?:[—\-;\s]|\*(?!\w)){1,3}')`.
+
+**Validação**: 2 casos reais de regressão corrigidos (aspa de abertura
+da citação em PEREIRA pg. 800; marcador `"*Reúne instruções..."` em
+PEREIRA pg. 41) sem reabrir os 2 casos de `*` decorativo genuíno já
+cobertos (logo GEN, `samples/001-080.pdf` pg. 4; marcador de margem
+`"* "` nas pgs. 23-77 do mesmo livro). Os 3 fixtures de regressão
+(`tests/fixtures/`) mantiveram o comportamento esperado.

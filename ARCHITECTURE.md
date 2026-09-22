@@ -2274,6 +2274,33 @@ necessariamente o idioma do livro) para o atributo HTML seria uma
 correção parcial e potencialmente enganosa. Registrado como risco
 residual conhecido, não implementado.
 
+> **Atualização posterior**: o commit `b4453b4` (11/set/2026) propagou
+> `args.lang` ao `--language` do Calibre (metadado de idioma do OPF do
+> EPUB) — aceitando, na prática e sem documentar a ressalva acima, o
+> mesmo trade-off que este achado havia identificado ("idioma do motor
+> de OCR ≠ idioma real do conteúdo, mas correção parcial melhor que
+> fixo"). Isso deixou o HTML e o OPF do mesmo EPUB divergentes: o OPF
+> passou a refletir `args.lang`, o HTML continuou fixo em `pt-BR` —
+> uma regressão de consistência não percebida na hora.
+>
+> **Correção aplicada** (ciclo seguinte, ver TRACE.md): `HTML_HEADER`
+> agora usa `args.lang` também, convertido do formato ISO 639-2/T de 3
+> letras (`por`/`eng`/`spa`, usado pelo Tesseract e pelo `--language` do
+> Calibre) para BCP 47 de 2 letras (`pt`/`en`/`es`, exigido pelo
+> atributo `lang` do HTML5) via mapeamento estático
+> `_LANG_OCR_PARA_HTML` em `foliant.py`. Isso é conversão determinística
+> de formato de código, não detecção de idioma — não resolve o risco
+> residual identificado acima (o valor continua sendo o idioma
+> declarado ao motor de OCR, não uma validação do idioma real do
+> conteúdo), só o estende, de forma consistente, ao segundo lugar do
+> EPUB onde ele já se aplicava silenciosamente desde `b4453b4`.
+> Qualquer código fora de `por`/`eng`/`spa` cai em `"pt"` como default
+> seguro (não deveria ocorrer, já que são os únicos suportados pela UI).
+> Validado com o fixture `tests/fixtures/ressalva_parcial.pdf` nos três
+> idiomas: `--lang por` → `<html lang="pt">`, `--lang eng` → `<html
+> lang="en">`, `--lang spa` → `<html lang="es">`; OPF e HTML do mesmo
+> EPUB agora concordam nos três casos.
+
 ### Parte 2 — supressão de título em página 100%-imagem: investigado e ABANDONADO (reversão de recomendação anterior)
 
 A inspeção anterior (seção acima) recomendava suprimir a detecção de
@@ -2433,9 +2460,12 @@ limiar.
   cluster oreilly/lifecycle (nota de rodapé + cabeçalho de seção com
   vocabulário compartilhado) continuam sem correção — mesma categoria de
   risco, ainda sem sinal calibrado que os resolva sem mais dados reais.
-- `<html lang="pt-BR">` continua fixo no HTML gerado, independente do
-  idioma real do livro — metadado de acessibilidade incorreto para
-  livros não-portugueses, não corrigido nesta rodada.
+- ~~`<html lang="pt-BR">` continua fixo no HTML gerado~~ — **corrigido**
+  em ciclo posterior: `HTML_HEADER` agora usa `args.lang` (mapeado de
+  ISO 639-2/T para BCP 47), alinhado ao `--language` do Calibre desde
+  `b4453b4`. Risco residual permanece: `args.lang` é o idioma declarado
+  ao motor de OCR, não uma validação do idioma real do conteúdo do
+  livro (ver seção "Achado adicional" acima).
 - A supressão de título por página-100%-imagem foi tentada com 3 sinais
   diferentes (cobertura de imagem, volume de texto, confiança OCR) e
   nenhum generaliza aos 2 casos reais conhecidos sem risco de regressão
@@ -3115,6 +3145,72 @@ ficou pronta primeiro, ela ocupou o 4.14 e a calibração pendente foi
 renumerada para Fase 4.15 (referências corrigidas em `TASKS.md` e
 acima, nesta mesma seção).
 
+## Fase 4.15: calibração de tempo estimado + investigação de threshold de confiança do Tesseract
+
+Evidência completa em `TASKS.md`, Fase 4.15, e dado bruto em
+`scripts/calibracao_ocr_resultados/RELATORIO.md` (script
+reexecutável: `scripts/calibrar_ocr.py`). Aqui, só as decisões e os
+números que embasam a implementação de "Tempo Estimado".
+
+**Tempo por página, medido (não estimado) em 40 páginas OCR reais
+(amostra espalhada dos 2 livros de calibração 100% escaneados do
+repo, MacBook 2016, `RENDER_DPI=200` idêntico ao de produção)**:
+média 6,08s/página, desvio-padrão 1,96s/página — **~32% da média**,
+mesmo dentro do mesmo livro. Página nativa (`get_text`) mediu
+~0,015s/página (29+28 páginas de 2 livros nativos), confirmando com
+número a suposição de "custo desprezível" já registrada em
+`contar_nativas` (Fase 4.14) — 2-3 ordens de magnitude mais rápida que
+OCR. `TEMPO_OCR_MEDIA_S = 6.08` e `TEMPO_OCR_DESVIO_S = 1.96` em
+`foliant.py` vêm diretamente desses 40 pontos; nativas não entram na
+conta de tempo estimado.
+
+**Por que a faixa de "Tempo Estimado" é linear no nº de páginas
+(`escaneadas × (média±desvio)`), não desvio agregado por `√n`**: a
+amostra desta fase só tem 1 obra real 100% escaneada disponível no
+repo (as duas amostras usadas, `samples/001-080.pdf` e
+`samples/livro_completo_208pg.pdf`, são a MESMA obra) — não há
+evidência de que a variância entre páginas de livros diferentes seja
+independente o bastante para justificar um desvio que cai com `√n`.
+Multiplicar o desvio por página pelo total de páginas é a escolha mais
+simples e mais conservadora (faixa mais larga) dado o que a amostra
+realmente sustenta — decisão registrada explicitamente para não ser
+reaberta como "bug" sem essa evidência em mãos.
+
+**Threshold de confiança do Tesseract: investigado, `image_to_data`
+já expõe `conf`, mas NENHUM threshold foi implementado** — decisão
+deliberada, não pendência esquecida. Achados do `RELATORIO.md`:
+- Das 7 páginas das 2 fixtures sintéticas "ruins" (`falha_ocr_ilegivel.pdf`,
+  `ressalva_parcial.pdf`), 5 produziram **zero palavras com confiança
+  válida** — o Tesseract não retorna confiança sobre ruído puro, ele
+  simplesmente não acha palavra nenhuma. É exatamente por isso que o
+  critério binário já em produção (Fase 4.16, "nenhum parágrafo/nenhum
+  título") cobre esse caso sem precisar de um score de confiança: onde
+  não há palavra, não há `conf` para um limiar decidir sobre.
+- O único ponto de dado real (não sintético) de página com confiança
+  baixa encontrado é N=1: página 113 (1-based) de
+  `samples/Fundamentals of Data Engineering...pdf` — um livro nativo
+  real com pelo menos uma página escaneada embutida —, `conf_media=37`,
+  `conf_min=0`, mas 532 palavras extraídas (não vazia). O critério
+  binário atual não pegaria esse caso. Sinal real de que a pergunta
+  "threshold de confiança complementaria o critério binário?" é
+  legítima, mas **n=1 é insuficiente para calibrar qualquer valor de
+  corte** a partir disso — implementar um threshold agora seria
+  inventar um número sem dado real o bastante, o que a regra do projeto
+  (calibração exige dado real primeiro) proíbe.
+- Percentis de `conf_media`: páginas "boas" (livros de calibração)
+  p10=91,6 a p90=95,6; páginas "ruins mas legíveis" (2 de
+  `ressalva_parcial.pdf` + a página 113 real) variam de 37 a 93 —
+  sobreposição real na faixa 75-93 entre os dois grupos, sem corte
+  único evidente com a amostra disponível.
+
+**Backlog futuro, não bloqueante — decisão explicitamente ADIADA, não
+descartada**: revisitar o threshold de confiança quando houver amostra
+maior de scans reais problemáticos (não sintéticos) — ex.: páginas
+borradas/mal escaneadas de livros reais, não ruído RGB gerado por
+script. As fixtures atuais servem bem para testar o critério binário
+já em produção, mas não dão dado suficiente para calibrar um score de
+confiança.
+
 ## Fase 4.16: conversão silenciosamente vazia — detecção por página + ativação de `com_ressalva`
 
 Evidência completa em `TASKS.md`, Fase 4.16, e em TRACE.md, oitavo
@@ -3123,8 +3219,15 @@ episódio. Aqui, só as decisões técnicas não óbvias.
 **Por que não é a Fase 4.15**: a Fase 4.13.1/4.14 reservou o número
 4.15 especificamente para calibração de tempo estimado e de threshold
 de confiança do Tesseract (`image_to_data` já retorna `conf` por
-bloco, mas o valor de corte nunca foi estimado contra dado real) — essa
-calibração continua **não feita**. Esta fase ativa `com_ressalva` por
+bloco, mas o valor de corte nunca foi estimado contra dado real) — no
+momento desta fase (4.16), essa calibração ainda **não tinha sido
+feita**. **Atualização**: a Fase 4.15 (registrada acima, fora de ordem
+cronológica no documento) mediu tempo real e implementou "Tempo
+Estimado", mas investigou e **decidiu deliberadamente não implementar**
+um threshold de confiança — a amostra real disponível (N=1 página real
+de baixa confiança) foi considerada insuficiente para calibrar um
+corte; ver Fase 4.15 para os números. Esta fase (4.16) ativa
+`com_ressalva` por
 um caminho genuinamente diferente: não um score de confiança, mas a
 mesma condição binária ("nenhum parágrafo, nenhum título") que já
 existia, sem nome, na linha de `construir_html` que decidia entre
@@ -3157,3 +3260,215 @@ exemplo, ignoram e mostram sempre a posição física). Risco residual
 declarado, não escondido: um PDF que declare `/PageLabels` customizado
 pode fazer o número reportado divergir do que aparece na barra de
 página de alguns leitores.
+
+## Fase 4.17: supressão de texto duplicado da capa no corpo do EPUB
+
+Evidência completa em `TASKS.md`, Fase 4.17, e em `TRACE.md`, décimo
+quinto episódio. Aqui, só a decisão técnica não óbvia: o gate é duplo,
+não um único sinal.
+
+**Gate duplo, não `capa_path is not None` sozinho**: `extrair_capa()`
+(Fase 4.5) já extrai a imagem da página 0 como `--cover`, mas
+`capa_path is not None` sozinho só diz "havia alguma imagem embutida na
+página 0" — não diz nada sobre o *conteúdo* dessa página. Testado e
+descartado em fixture antes de qualquer uso real: com esse sinal
+isolado, `tests/fixtures/ressalva_parcial.pdf` (página 1 com texto real
+renderizado como imagem) teve o texto apagado do corpo, e
+`tests/fixtures/falha_ocr_ilegivel.pdf` deixou de disparar
+`FALHA:sem_texto_legivel` corretamente (ver TRACE.md para o relato
+completo). A condição final (`foliant.py:1149-1151`) é um `and` de duas
+checagens independentes:
+
+```python
+pagina_capa_suprimida = i == 0 and capa_path is not None and pagina0_e_duplicata_de_metadados(
+    texto, titulo_meta, autor_meta
+)
+```
+
+`pagina0_e_duplicata_de_metadados()` (`foliant.py:1065-1093`) compara o
+texto extraído (nativo ou OCR) da página 0, normalizado e por palavra
+(não substring exata — a ordem "autor, depois título" que o OCR produz
+não bate com a ordem dos campos separados no metadado), contra
+`titulo_meta`/`autor_meta` — os mesmos campos de `doc.metadata` que
+`inspecionar_pdf()` já usa para o autopreenchimento de título/autor no
+`--inspect` (confirmado como caminho totalmente independente: `--inspect`
+nunca lê texto de página nenhuma). Só considera "duplicata" (permite a
+supressão) quando o texto da página 0, depois de remover todas as
+palavras de título+autor, sobra com `≤15` caracteres residuais.
+
+**Fallback sem metadado — decisão deliberada, não omissão**:
+`foliant.py:1086` retorna `False` de imediato quando não há título NEM
+autor em `doc.metadata` — sem esse sinal, não há base para decidir se o
+texto da página 0 é duplicata ou conteúdo real, e a escolha mais segura
+é não suprimir (comportamento idêntico ao pré-Fase-4.17). Isso também
+explica por que os 3 fixtures de regressão (nenhum tem
+`/Title`/`/Author` preenchido) nunca disparam a supressão, e por que
+`FDE` (metadado presente, mas com subtítulo/selo de edição real na
+página 0 além de título/autor) também não é suprimido — o residual da
+comparação ultrapassa o limiar de 15 caracteres.
+
+**Por que não tocar em `construir_html()` seria insuficiente**:
+cogitado inicialmente não alterar `construir_html()` — mas o número de
+linhas do cache é 1:1 com a numeração física de página
+(`id="pg-{i+1}"`, mesma numeração usada em `paginas_sem_texto`/RESSALVA,
+Fase 4.16), e simplesmente não escrever a linha de cache da página 0
+deslocaria essa numeração por -1 em todas as páginas seguintes — quebra
+silenciosa do contrato de numeração exibido ao usuário na tela de
+ressalva. A mudança mínima necessária foi manter uma linha de cache por
+página física (registro com `"pagina_capa_suprimida": true` quando a
+supressão dispara) e adicionar um `elif` em `construir_html()`
+(`foliant.py:1316`) que reconhece essa marca e pula o fallback de
+"não pôde ser transcrita" sem contar a página em `paginas_sem_texto`.
+
+## Fase 4.18: investigação de detecção de tabela — sem solução viável identificada
+
+Evidência completa em `TRACE.md`, décimo sexto episódio. Nenhum código
+alterado — investigação pura, motivada pelo achado do décimo segundo
+episódio (tabelas nativas do PEREIRA viram texto corrido sem estrutura
+de linha/coluna no EPUB).
+
+Três sinais testados contra as 2 tabelas nativas reais conhecidas
+(PEREIRA pg. 41 e pg. 800/801) e contra teste negativo:
+
+1. `page.find_tables()` (PyMuPDF 1.28.2), estratégia default: **0/3**
+   detecções nas tabelas conhecidas — falso-negativo puro.
+2. `page.find_tables(strategy='text')`: dispara em ~100% das páginas
+   testadas (tabela ou prosa), bbox cobrindo quase a página inteira —
+   falso positivo generalizado.
+3. Geometria manual (gap horizontal entre linhas na mesma faixa de Y,
+   `get_text("dict")["blocks"]`): **3/3** tabelas conhecidas detectadas
+   (threshold ≥30pt, baseline de prosa medido em até 15.36pt, gap real
+   de tabela de 36.1pt a 267.2pt), mas **4 falsos positivos reais** ao
+   testar contra o livro completo (903 páginas, não só a amostra
+   pedida) — páginas de bibliografia com URL fragmentada em runs de
+   texto, gap de 23pt a 101pt, **sobrepondo diretamente** a faixa de
+   gap de tabela real. Sem threshold único viável.
+
+### Limitações conhecidas
+
+- **Tabelas não são detectadas nem tratadas especialmente** — o texto
+  de uma tabela vira parágrafo corrido no EPUB, perdendo toda estrutura
+  de linha/coluna (achado do décimo segundo episódio do TRACE.md,
+  confirmado com 2 tabelas reais do PEREIRA). Risco residual conhecido,
+  sem correção viável identificada até o momento — os 3 sinais
+  disponíveis (API nativa do PyMuPDF em duas estratégias, e heurística
+  geométrica de gap horizontal) foram testados com dado real e nenhum
+  atinge confiabilidade sem falso positivo. Mesmo padrão de decisão já
+  registrado na Fase 4.5: "investigado, sem solução viável, não
+  forçado" — não é considerado um item de correção pendente, é uma
+  limitação documentada do método de extração atual.
+- Reabrir este item exigiria ou (a) um sinal novo não testado nesta
+  rodada (ex.: composição de geometria + detecção de contexto de
+  URL/hyperlink via `page.get_links()`, para tentar excluir
+  especificamente o padrão de bibliografia), ou (b) uma decisão de
+  produto explícita para aceitar uma taxa de falso positivo pequena e
+  conhecida (~0,44% das páginas do PEREIRA, concentrada em bibliografia
+  com link) como trade-off — nenhuma das duas foi adotada nesta fase.
+
+## Fase 4.20: extração de figura no caminho OCR — invariante adotada, estado do corpus, e validação do caminho de entrega
+
+Rodada de mapeamento e análise (registro narrativo completo no décimo
+oitavo episódio do `TRACE.md`). Nenhum detector, nenhum limiar e
+nenhuma dependência nova foram introduzidos. O que esta fase fixa são
+duas decisões de projeto e a validação do caminho de entrega de figura,
+que estava em produção sem nunca ter sido inspecionado.
+
+### Invariante adotada: recorte não remove texto OCR
+
+**Em qualquer implementação futura de extração de figura no caminho
+OCR, o recorte NÃO remove o texto OCR da região.** A figura entra no
+fluxo; o texto reconhecido naquela região permanece.
+
+A razão é a assimetria de custo de erro, que é **diferente** entre os
+dois caminhos e por isso não pode ser herdada do caminho nativo:
+
+- No caminho **nativo**, um falso positivo insere uma imagem que existe
+  de verdade no PDF, só que pequena ou decorativa. O dano é estético e
+  limitado — foi exatamente o caso dos 2 glifos de borda de tabela do
+  PEREIRA pg. 645 que motivaram o filtro de 20pt.
+- No caminho **OCR** não existe imagem embutida. Um falso positivo
+  recorta um pedaço de **texto legível**, rasteriza e — se também
+  removesse o texto — o retiraria do fluxo. O leitor perderia texto
+  pesquisável, selecionável e reflowable, e ganharia um bloco de raster
+  borrado. Isso é **pior que o status quo**, não neutro. O status quo
+  (figura perdida, texto preservado) é aceitável; o inverso não é.
+
+Mantendo o texto, o pior caso de um falso positivo passa a ser
+redundância visual — degradação recuperável pelo leitor — em vez de
+perda de conteúdo. Custa alguma elegância e compra uma queda grande no
+custo do erro, na direção que o projeto já adota desde a Fase 4.5
+("investigado, sem solução viável, não forçado") e desde a decisão de
+tabela da Fase 4.18 ("falso negativo é status quo aceito; falso
+positivo é o risco assimétrico").
+
+### Estado do corpus: N=0 amostras do caso-alvo
+
+O caso-alvo declarado é **figura embutida numa página de texto**
+(diagrama/gráfico ocupando parte da página, com prosa em volta) — o
+padrão dominante numa apostila escaneada. O corpus do projeto tem
+**zero** amostras desse caso.
+
+As duas amostras positivas em uso foram inspecionadas visualmente nesta
+fase, e nenhuma é do tipo alvo:
+
+| Amostra | O que é de fato |
+|---|---|
+| FDE p.112 (`conf_media=37,09`, Fase 4.15) | Pôster *MAD Landscape 2021* ocupando a página inteira, sem texto de corpo |
+| Gil pg.178 (`Figura 20.1`, 17º episódio) | Cronograma de Gantt **rotacionado 90°**, ~90% da página, com bleed-through do verso |
+
+Ambas são **páginas-figura inteiras**. Isso tem três consequências
+registradas para não serem redescobertas:
+
+1. Calibrar qualquer limiar contra elas calibra um detector de
+   página-figura inteira, não de região.
+2. Página-figura inteira é um problema **diferente e mais fácil**, e já
+   parcialmente tratado: `construir_html` ([foliant.py:1234-1236](foliant.py#L1234-L1236))
+   já classifica "página só com imagem" como não-falha, fora da lista
+   de ressalva.
+3. O sinal do 17º episódio (`conf<10` + `height>100px`) acerta a pg.178
+   por um mecanismo que não generaliza — detecta texto rotacionado, não
+   figura (evidência no 18º episódio do `TRACE.md`).
+
+**Pré-requisito para reabrir a detecção**: adquirir amostra do caso-alvo
+com **cobertura de tipos visuais** (foto, gráfico de barras com rótulo
+horizontal, fluxograma, tabela-figura), não mais exemplares do mesmo
+tipo — mais amostras do tipo já coberto confirmariam o artefato em vez
+de testá-lo. Com ground truth de bbox anotada à mão, sem a qual só se
+mede precisão, que foi justamente a assimetria que deixou o 17º
+episódio inconclusivo. E rodando o teste negativo contra o corpus
+**completo**, não contra páginas escolhidas a dedo — a lição do 16º
+episódio.
+
+### Caminho de entrega de figura: validado e corrigido
+
+A extração de imagem de corpo estava em produção desde o décimo quarto
+episódio, validada até o HTML e até a presença do arquivo no `.epub` —
+mas **a apresentação no e-reader nunca tinha sido verificada**. Medição
+do EPUB real (detalhe numérico em `TASKS.md`, Fase 4.20):
+
+- `HTML_HEADER` não tinha **nenhuma** regra para `img`/`figure`/
+  `figcaption`. O Calibre sintetizava `.calibre4 { height: auto;
+  width: auto; }` — largura intrínseca, sem contenção alguma.
+- As imagens de corpo são a maior parte do arquivo: **77,1% do EPUB do
+  FDE** (1889KB de 2451KB) e **57,7% do PEREIRA** (1848KB de 3205KB).
+  O PEREIRA passou de 1395KB (só capa, commit `5b39443`) para 3205KB —
+  **+130%**, praticamente todo atribuível às figuras.
+- 4 das 33 imagens do FDE passam de 1600px de largura (até 2048px),
+  acima da viewport típica de um tablet de 10".
+
+Corrigido com 3 regras em `HTML_HEADER`
+([foliant.py:148-166](foliant.py#L148-L166)), e **verificado que
+sobrevivem ao achatamento de CSS do Calibre** no `.epub` regenerado —
+`max-width: 100%` presente na classe aplicada ao `<img>` nos dois
+livros. O codec das figuras vem do PDF original (o caminho nativo grava
+os bytes embutidos sem recomprimir): FDE é todo PNG, PEREIRA todo JPEG.
+
+**Risco residual**: a confirmação visual em e-reader Android real não
+foi feita — o que está provado é o nível de artefato (antes não havia
+contenção, depois há). Ver `TASKS.md`, Fase 4.20.
+
+Nota de escopo sobre DPI: `RENDER_DPI = 200` foi validado para
+**legibilidade de texto por OCR**, nunca para qualidade de figura. São
+critérios diferentes. A pergunta "um recorte a 200 DPI é legível em
+tablet?" só se aplica ao caminho OCR, que não foi aberto — no caminho
+nativo a figura nunca passa por render.

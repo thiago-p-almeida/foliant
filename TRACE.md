@@ -9,6 +9,16 @@ correção → validação. Nada aqui foi reescrito para parecer mais limpo do
 que foi; o ponto do episódio é justamente que a primeira versão estava
 incompleta, e isso ficou registrado, não escondido.
 
+> **Nota de numeração (registrada na Fase 4.20, atualizada ao gravar o
+> décimo terceiro episódio).** A sequência de episódios pula o
+> **sétimo**: os títulos saltam do sexto direto para o oitavo. Não há
+> episódio perdido — é um número reservado e não usado. Mantido como
+> está de propósito: renumerar quebraria todas as cross-refs existentes
+> em `ARCHITECTURE.md`, `TASKS.md` e nos comentários de `foliant.py`,
+> que citam os episódios pelo número atual. (O décimo terceiro, que
+> antes também aparecia como lacuna nesta nota, foi preenchido — ver
+> abaixo.)
+
 ## Por que este episódio, e não outro
 
 Quase todo o histórico de fases deste projeto segue o mesmo padrão
@@ -978,3 +988,785 @@ sobre o idioma do *motor de OCR* nunca chegando ao metadado do Calibre,
 um simples desacoplamento entre duas variáveis que já existiam no
 código, uma delas ligada corretamente e a outra hardcoded desde o
 início.
+
+---
+
+# Décimo primeiro episódio — dois metadados de idioma divergentes no mesmo EPUB
+
+O commit `b4453b4` (episódio anterior) propagou `args.lang` ao
+`--language` do Calibre, corrigindo o OPF — mas `HTML_HEADER`
+continuava com `<html lang="pt-BR">` hardcoded, um achado que já
+estava registrado em `ARCHITECTURE.md` (linhas 2262-2273) *antes*
+desse commit, mas não foi revisitado na hora de aplicá-lo. Resultado:
+um EPUB convertido de um PDF em inglês passou a declarar
+`<dc:language>en</dc:language>` no OPF e `<html lang="pt-BR">` no HTML
+do mesmo arquivo — dois metadados de idioma divergentes no mesmo
+e-book, uma inconsistência pior do que antes do fix parcial (antes,
+ao menos os dois lados concordavam, mesmo que ambos errados).
+
+Corrigido propagando `args.lang` também ao `HTML_HEADER`, via um
+mapeamento estático de código (`_LANG_OCR_PARA_HTML`, ISO 639-2/T de
+3 letras usado pelo Tesseract/Calibre → BCP 47 de 2 letras exigido
+pelo atributo `lang` do HTML5) — conversão determinística de formato,
+não detecção de idioma. Validado com a fixture
+`tests/fixtures/ressalva_parcial.pdf` nos três casos (`por`→`pt`,
+`eng`→`en`, `spa`→`es`): OPF e HTML do mesmo EPUB agora concordam. O
+risco residual identificado desde o achado original permanece e está
+documentado nos dois pontos do `ARCHITECTURE.md`: `args.lang` é o
+idioma declarado ao motor de OCR, não uma validação do idioma real do
+conteúdo do livro.
+
+**Lição, generalizável a qualquer par de metadados espelhados neste
+projeto**: uma correção parcial aceita conscientemente como trade-off
+num lugar (aqui, o OPF) precisa ser propagada ao mesmo tempo para o
+lugar espelhado (aqui, o HTML) — ou a "correção parcial" não fica
+neutra, ela cria uma inconsistência nova e pior do que o bug original
+que motivou a correção.
+
+# Décimo segundo episódio — inspeção de fidelidade de formatação: sete
+perguntas, cinco achados reais, dois "não se aplica"
+
+Investigação pura (nenhum código de produção alterado), motivada por
+dois problemas já observados pelo usuário no EPUB gerado: aspas mal
+formatadas e dúvida sobre extração de imagens de corpo. Em vez de
+supor, cada um dos sete itens foi testado chamando as próprias funções
+de `foliant.py` (`extrair_texto_pagina`, `limpar_linha`,
+`unir_linhas_em_paragrafos`) sobre páginas reais de
+`samples/Artigos Científicos... PEREIRA.pdf` (903 páginas, texto
+nativo) e `samples/001-080.pdf` (escaneado, caminho OCR) — o mesmo
+livro nativo que já tinha revelado o bug de recuo de linha no Quarto
+episódio.
+
+**1. Aspas — CONFIRMADO, acha a causa exata.** `_RE_RUIDO_INICIAL`
+(linha ~189) trata até 3 caracteres decorativos no INÍCIO de qualquer
+linha como ruído a descartar — e a classe de caracteres inclui aspas
+retas E curvas (`"'""`). Isso não é um problema de OCR confundindo
+aspas: acontece também no caminho nativo. Evidência real, página 800
+do PEREIRA: a linha original `'“Muitas regras para a realização...'`
+(abre uma citação de Ramón y Cajal) sai de `limpar_linha()` como
+`'Muitas regras para a realização...'` — aspa de abertura apagada. A
+aspa de fechamento, 5 linhas depois, sobrevive (não está no início de
+linha) e fica órfã: `'...estímulos alentadores.”'` no parágrafo
+final. Mesma função roda idêntica no caminho OCR (nenhuma
+diferenciação de fonte), então o defeito é estrutural ao
+`limpar_linha()`, não a uma falha específica de reconhecimento.
+
+**2. Imagens no corpo — CONFIRMADO: gap arquitetural total, não
+parcial.** `get_images()`/`extract_image()` só são chamados dentro de
+`extrair_capa()` (linha ~811), restrito à página 0. Não existe
+nenhuma outra chamada a essas APIs nem qualquer emissão de `<img>` no
+HTML gerado (`grep` confirma). Ambos os livros de amostra têm figuras
+reais no corpo — 39 páginas com imagem (além da pg. 0) em "Fundamentals
+of Data Engineering" e 37 no PEREIRA — nenhuma delas chega ao EPUB.
+Não é uma lacuna nunca percebida por acidente sutil: é ausência total
+e sem exceção de qualquer caminho de código que leia imagem de corpo.
+
+**3. Itálico/negrito — CONFIRMADO: informação existe na fonte e é
+descartada no código, mais um limite de ferramenta no caminho OCR.**
+No caminho nativo, `extrair_linhas_nativas()` (linha ~549) monta o
+texto só com `span["text"]`, nunca lendo `span["flags"]` (bit de
+itálico) nem o nome da fonte (que indicaria negrito) — e a informação
+existe de fato: página 800 do PEREIRA tem o título de obra "Regras e
+conselhos sobre a investigação científica" em itálico real no PDF
+(`flags=6`, bit itálico setado), que sai como texto plano idêntico ao
+resto do parágrafo. No caminho OCR, o próprio `pytesseract.image_to_data()`
+não expõe estilo de fonte (chaves do dict: `level, page_num, block_num,
+par_num, line_num, word_num, left, top, width, height, conf, text` —
+nenhum campo de estilo) — limite da ferramenta, não do código.
+
+**4. Hifenização de fim de linha — CONFIRMADO, mas como comportamento
+CORRETO, não bug.** Testado com um caso real de quebra por hífen em
+`samples/001-080.pdf` (caminho OCR, página 3): a linha `'...prover a
+melhor informa-'` mais a linha seguinte produzem corretamente
+`'...prover a melhor informação científica e distribuí-la...'` no
+parágrafo final — override 1 de `linhas_inicio_paragrafo()` (hífen no
+fim da linha anterior força continuação) e a lógica de junção em
+`unir_linhas_em_paragrafos()` (remove o hífen e cola direto) funcionam
+como projetado. Não é item de correção.
+
+**5. Layout em colunas múltiplas — NÃO SE APLICA.** Busca automatizada
+por páginas com duas concentrações de `x0` de linha abaixo de ~70% da
+largura da página, nos dois PDFs nativos disponíveis, achou candidatos
+só no PEREIRA (64 páginas) — mas inspeção manual de várias delas
+(pg. 41, pg. 100) mostra que são tabelas de 2-3 colunas (rótulo/código/
+ano), não texto corrido em colunas de leitura. Nenhuma amostra
+disponível tem de fato um artigo em layout de coluna dupla de texto
+corrido — não construí um PDF sintético forçado para este item,
+conforme escopo definido.
+
+**6. Tabelas — CONFIRMADO, o achado mais grave da lista.** Duas tabelas
+reais testadas (PEREIRA pg. 41 e pg. 800, ambas nativas — sem depender
+de OCR). Em ambos os casos o resultado é o mesmo: nenhuma estrutura de
+linha/coluna sobrevive. Exemplo pg. 41 (tabela rótulo/código-NBR/ano):
+o HTML final gerado funde a tabela inteira, a nota de rodapé da tabela
+e a PRÓXIMA tabela num único parágrafo de texto corrido de ~90
+palavras, com números e anos soltos sem nenhum vínculo visual ou
+estrutural ao rótulo a que pertenciam (ex.: `'2011 Numeração e
+coordenação Editoração de traduções'` — três células de duas linhas
+diferentes da tabela grudadas numa frase sem sentido). Isso quebra
+legibilidade, não é só perda estética.
+
+**7. Notas de rodapé — CONFIRMADO, dois defeitos empilhados.** O livro
+usa numeração de nota sobrescrita colada à palavra (sem espaço) —
+ex. `'...se pronunciou:1'`, `'...obra mencionada1'` (pg. 800) — que já
+sai ambígua no texto plano (sem sobrescrito, parece parte da frase).
+Pior, na pg. 41 a nota de rodapé real da tabela (marcada por `*` no
+original: `'*A expressão "normas brasileiras" é usualmente
+empregada...'`) tem o `*` removido pelo MESMO bug do item 1
+(`_RE_RUIDO_INICIAL` também trata `*` como ruído inicial) — a nota
+perde o único vínculo visual que a ligava ao marcador da tabela, e
+ainda fica fundida ao texto de corpo adjacente pelo defeito do item 6.
+Nenhuma nota de rodapé nas amostras inspecionadas mantém qualquer
+referência restaurável à chamada no texto principal.
+
+**Severidade (legibilidade/estrutura vs. estética) — não é decisão de
+prioridade, só classificação para orientar uma decisão futura:**
+- Quebra estrutura/legibilidade: **tabelas (6)** — conteúdo tabular
+  vira texto corrido sem sentido; **notas de rodapé (7)** — perde
+  vínculo com a chamada, funde-se ao corpo.
+- Perda de conteúdo, sem quebrar legibilidade da prosa ao redor:
+  **imagens de corpo (2)** — figura inteira ausente, texto ao redor
+  continua legível; **aspas (1)** — perde par de aspas mas a frase
+  continua compreensível.
+- Estético, sem perda de informação legível: **itálico/negrito (3)**
+  — ênfase perdida, texto ainda correto e completo.
+- Não é bug: **hifenização (4)** funciona; **colunas múltiplas (5)**
+  não tem amostra real disponível para testar.
+
+**Não investigado nesta rodada** (fora do escopo/tempo desta etapa):
+qualidade/resolução da imagem extraída em comparação ao original (não
+chegou a ser testado porque nenhuma imagem de corpo é extraída — item
+2 já bloqueia essa sub-pergunta); teste do item 1 especificamente pelo
+caminho OCR com um diálogo real citado entre aspas (a causa já foi
+confirmada estrutural ao `limpar_linha()`, comum aos dois caminhos, o
+que tornou um segundo teste redundante para confirmar a MESMA causa —
+mas nenhum exemplo OCR de aspas foi inspecionado lado a lado); PDF
+sintético multi-coluna para validar se o critério de ordem de leitura
+do PyMuPDF quebraria nesse cenário (decisão de escopo: instrução
+pedia para não forçar teste artificial nos itens sem evidência real
+disponível).
+
+# Décimo terceiro episódio — correção real da limpeza de ruído decorativo: aspas e marcador de nota preservados
+
+Implementação da correção identificada no décimo segundo episódio
+(itens 1 e 7: aspas retas/curvas removidas indevidamente da classe de
+ruído inicial; `*` colado a palavra tratado como decorativo sem
+distinção). O décimo segundo episódio foi investigação pura — este é o
+fix aplicado depois, sobre `_RE_RUIDO_INICIAL` (`foliant.py`).
+
+**Mudança na regex**: a classe de caracteres tratados como ruído
+decorativo no início de linha deixou de incluir aspas (retas `'` `"` e
+curvas `" " ' '`) por completo — nenhum caso real de "aspa solta = ruído
+genuíno de OCR" apareceu na investigação, só regressão (a aspa de
+abertura da citação de Ramón y Cajal, PEREIRA pg. 800). O `*` passou a
+só ser tratado como ruído quando **não** está colado a uma palavra —
+lookahead negativo `(?!\w)` — para preservar o marcador de nota de
+rodapé (`"*Reúne instruções..."`, PEREIRA pg. 41) sem deixar de limpar
+os dois casos reais de `*` puramente decorativo já validados antes da
+regressão: a linha isolada `"*"` do ícone do logo GEN OCRizado
+(`samples/001-080.pdf` pg. 4, Fase 4.5) e o marcador de margem repetido
+`"* "` (sempre seguido de espaço) que se repete no início de dezenas de
+linhas de corpo do mesmo livro, páginas 23 a 77 — confirmado por OCR
+real nesta correção, não suposição.
+
+Padrão final: `_RE_RUIDO_INICIAL = re.compile(r'^(?:[—\-;\s]|\*(?!\w)){1,3}')`.
+
+**Validação**: rodada contra os 3 fixtures de regressão
+(`tests/fixtures/`) — sem mudança de comportamento nos dois casos de
+falha/ressalva (nenhum deles depende de `_RE_RUIDO_INICIAL` para o
+resultado que já era esperado), confirmando que a correção não abre
+regressão nova nos casos já cobertos por teste automatizado.
+
+# Décimo quarto episódio — extração de imagem de corpo: gap fechado, dois
+bugs reais achados só na validação ponta a ponta
+
+Implementada a extração de imagens de corpo (diagramas/gráficos) para
+PDFs de texto nativo, reaproveitando `get_text("dict")` (blocos de
+imagem já vêm ordenados junto do texto, bytes inclusos — sem precisar de
+`get_images()`/`extract_image()` separado). Filtro de 20pt exclui
+glifos decorativos (validado: 2 ícones de borda de tabela do PEREIRA
+pg. 645).
+
+Dois bugs reais, achados só ao rodar o pipeline de produção completo
+contra os livros de amostra (não um script de pesquisa):
+
+**1. Causa raiz: resolução de link simbólico, não o diretório em si.**
+`tempfile.TemporaryDirectory()` no macOS cai em `$TMPDIR` (algo como
+`/var/folders/.../T/tmpXXXXXXXX`) — um caminho sob `/var`, que é link
+simbólico para `/private/var`. `--cover` (path absoluto passado direto
+na linha de comando ao Calibre) sempre funcionou; `<img src="...">` de
+imagem de corpo (arquivo irmão de `livro.html`, só referenciado de
+dentro do HTML, nunca passado como argumento) falhava SILENCIOSAMENTE —
+exit 0, a tag `<img>` sobrevivia no HTML, mas o arquivo nunca entrava no
+`.epub` final. Confirmado por eliminação (mesmos bytes, mesmo modo
+0644, mesmo processo) que a única variável era o diretório pai, e por
+teste direto que `os.path.realpath()` do path original já resolve para
+`/private/var/folders/...` — usar esse caminho RESOLVIDO faz o Calibre
+encontrar as imagens. Tentativa inicial (`dir="/private/tmp"`
+hardcoded) resolvia o sintoma no Mac mas quebrava Linux (path
+inexistente); substituída por `tmp_dir = Path(os.path.realpath(tmp))` —
+cross-platform por construção (`realpath()` é no-op onde não há link
+simbólico a resolver, caso típico do Linux; mecanismo é padrão do SO,
+não exclusivo de macOS). Sem máquina Linux disponível para testar
+diretamente nesta sessão — validado por leitura de código que o fix não
+depende de nenhum caminho/comportamento exclusivo de macOS, mas a
+validação real em Linux fica como risco residual não testado.
+
+**2. Legenda de figura fundida ao parágrafo seguinte.** Marcador de
+imagem contaminava a mediana de recuo da página (usada para classificar
+início de parágrafo), fundindo a legenda de figura com o parágrafo de
+corpo seguinte dentro do mesmo `<figcaption>`. Corrigido excluindo
+marcadores do cálculo estatístico e capturando a legenda direto dos
+blocos crus de `get_text("dict")`, antes da fusão de parágrafos — não
+depois.
+
+Validado com os 2 livros completos (FDE 210pg., PEREIRA 903pg.), o
+livro 100% escaneado (zero regressão — extração só cobre caminho
+nativo) e os 3 fixtures de falha/ressalva.
+
+# Décimo quinto episódio — texto duplicado da capa no corpo do EPUB: heurística ingênua corrigida antes de virar regressão
+
+Investigação partiu de uma dúvida concreta: `extrair_capa()` já extrai a
+imagem da página 0 como capa (`--cover`), mas o *texto* dessa mesma
+página continuava passando pelo fluxo normal de OCR/nativo e virando
+parágrafo de corpo — achado real, confirmado com o EPUB já commitado do
+PEREIRA (903pg.): `livro_split_000.html` continha `<p>Maurício Gomes
+Pereira Artigos Científicos Como Redigir, Publicar e Avaliar</p>`,
+repetindo texto já mostrado visualmente pela capa. `--inspect`
+(autopreenchimento de título/autor) foi confirmado como caminho
+totalmente independente (usa `doc.metadata`, nunca lê texto de página) —
+não havia risco de acoplamento entre os dois usos.
+
+**Primeira tentativa, descartada em fixture antes de chegar a produção.**
+Heurística inicial: suprimir texto da página 0 sempre que `extrair_capa()`
+retornasse uma imagem (`capa_path is not None`). Rodar os 3 fixtures de
+regressão do episódio 8 revelou o problema na hora: `extrair_capa()`
+extrai a primeira imagem embutida da página 0 **independente do que ela
+contém** — qualquer página 0 renderizada como imagem (inclusive conteúdo
+real, inclusive ruído sintético) passa. `ressalva_parcial.pdf` (página 1
+com texto real desenhado sobre imagem, simulando OCR) teve esse texto
+**apagado silenciosamente do corpo** — o mesmo risco que a investigação
+original já tinha sinalizado como hipotético ("se esse padrão existir em
+algum PDF de usuário, supressão incondicional perderia texto real") se
+materializou de imediato num fixture do próprio repo, não em produção.
+`falha_ocr_ilegivel.pdf` (3 páginas de ruído puro, usado para garantir
+que 100% de páginas ilegíveis aborta a conversão) também regrediu: a
+página 0 deixou de contar como "sem texto", e o gate `FALHA:sem_texto_legivel`
+parou de disparar.
+
+**Correção: comparar com metadado, não só checar se há imagem.** Sinal
+trocado para `pagina0_e_duplicata_de_metadados()` — só suprime quando
+`capa_path is not None` **E** o texto da página 0, normalizado e
+comparado palavra a palavra, é integralmente "coberto" pelo
+título+autor já conhecidos via `doc.metadata` (mesmos campos que
+`inspecionar_pdf` usa). Comparação por palavra, não substring exata: o
+OCR da capa do PEREIRA saiu na ordem "autor, depois título"
+("Maurício Gomes Pereira Artigos Científicos...") — diferente da ordem
+dos campos separados no metadado, mas as mesmas palavras. Sem
+título/autor no metadado, não há sinal confiável — não suprime.
+
+Revalidado nos mesmos 2 livros completos do episódio 14 (FDE 210pg.,
+PEREIRA 903pg.) e nos 3 fixtures de falha/ressalva:
+- **PEREIRA**: duplicação confirmada removida (`pg-1` fica vazio),
+  capa intacta em `titlepage.xhtml`, extração de imagem de corpo
+  (episódio 14) intacta em `pg-2`/`pg-3`.
+- **FDE**: texto da página 0 **não** suprimido — corretamente, porque
+  além de título/autor há subtítulo/selo de edição real ("Plan and
+  Build Robust Data Systems", "RAW & UNEDITED"), então o residual da
+  comparação ultrapassa o limiar e a heurística conservadoramente
+  recua. Mesmo comportamento documentado na Fase 4.5 (título de capa
+  promovido a `<h2>`, preservado) — nenhuma regressão.
+- **3 fixtures**: `falha_ocr_ilegivel` volta a abortar corretamente
+  (nenhum tem metadado de título/autor, então a heurística nunca
+  dispara nelas); `ressalva_parcial` preserva o texto real da página 1.
+- **`capa_path is None`** (PDF sem imagem extraível na página 0, ex.
+  currículo nativo): comportamento herdado, sem nenhuma mudança.
+
+**Risco residual explícito, não resolvido por falta de amostra**: não é
+"qualquer PDF com capa extraível e texto real seria suprimido" — a
+segunda camada (`pagina0_e_duplicata_de_metadados()`) já descarta esse
+caso genérico, confirmado pelo próprio fixture que a expôs
+(`ressalva_parcial.pdf`) e pelo FDE. O risco que sobra é mais estreito:
+um PDF **com metadado de título/autor preenchido**, cuja página 0
+misture capa com conteúdo de leitura genuíno que colida por acaso com as
+palavras do título/autor, dentro do limiar de `≤15 caracteres residuais`
+(`foliant.py:1093`) — nesse caso específico, a supressão dispararia
+mesmo havendo conteúdo real. Não há, na amostra disponível (PEREIRA:
+capa pura; FDE: capa com subtítulo real, corretamente não suprimida),
+nenhum PDF que exponha esse caso. Registrar como limitação conhecida,
+não como garantia universal — mesmo espírito da ressalva já registrada
+na Fase 4.5 sobre a tentativa (abandonada) de supressão incondicional de
+título de capa.
+
+# Décimo sexto episódio — detecção de tabela: três sinais testados, nenhum viável sem falso positivo
+
+Investigação motivada pelo achado mais grave do décimo segundo episódio
+(item 6): tabelas nativas do PEREIRA (pg. 41 e pg. 800/801, confirmadas
+visual e textualmente) viram texto corrido sem estrutura de
+linha/coluna no EPUB gerado. Objetivo desta rodada: avaliar se existe
+sinal real — não heurística inventada — para detectar um bloco de
+tabela e aplicar CONTENÇÃO (preservar como texto pré-formatado, sem
+reconstruir a estrutura visual). Investigação pura, nenhum código de
+produção alterado.
+
+**Sinal 1 — `page.find_tables()` (API nativa do PyMuPDF 1.28.2),
+estratégia default (`lines_strict`/`lines`)**: 0 tabelas detectadas nas
+3 páginas de tabela confirmadas. Falso-negativo puro — nunca dispara
+nessas condições, inútil como sinal.
+
+**Sinal 2 — `find_tables(strategy='text')`**: dispara em praticamente
+toda página testada, tabela ou prosa, com bbox cobrindo ~100% da
+página e `.extract()` sem sentido (quebra palavras soltas em
+"colunas"). Falso positivo generalizado — inutilizável pelo motivo
+oposto ao sinal 1.
+
+**Sinal 3 — geometria manual (`get_text("dict")["blocks"]`, gap
+horizontal entre linhas na mesma faixa de Y)**: o único com
+sensibilidade real. Baseline medido (não estimado) de espaçamento entre
+palavras em prosa normal: máximo absoluto 15.36pt, em qualquer página
+testada. Gap entre células de linhas diferentes, nas 3 páginas de
+tabela confirmadas: de 36.1pt a 267.2pt — margem clara para um
+threshold em ≥30pt. Acertou as 3 tabelas conhecidas e passou limpo no
+teste negativo direto pedido (3 páginas de prosa pura). Mas o teste
+negativo foi além do pedido — rodado contra as 903 páginas do livro
+inteiro, não só as 3 amostradas — e revelou **4 falsos positivos reais
+e estruturais**: páginas de bibliografia com URL fragmentada em runs de
+texto separados (gaps de 23pt a 101pt), cuja faixa **se sobrepõe
+diretamente** à faixa de gap de tabela real (36pt-267pt). Não existe
+threshold único que separe os dois casos sem também perder a tabela de
+menor gap conhecida (36.1pt). Threshold mais baixo (20pt) introduz um
+segundo tipo de falso positivo (marcadores decorativos "•" alinhados à
+primeira linha do parágrafo, gap ≈22.5pt, 4 páginas de prosa) — abaixar
+o limiar piora, não resolve.
+
+**Por que ir além das 3 páginas pedidas mudou a conclusão**: um teste
+negativo de 3 páginas escolhidas a dedo (meio do livro, prosa óbvia)
+teria reportado zero falso positivo e validado o sinal geométrico como
+seguro. Só ao escanear o livro inteiro (903 páginas, 45s de execução —
+barato o bastante para não ser um obstáculo) apareceu o caso real que
+derruba o sinal — mesma lição estrutural do décimo segundo episódio
+(inspeção de fidelidade): um teste negativo pequeno demais mascara
+exatamente o tipo de exceção que só aparece em escala real.
+
+**Custo**: `find_tables()` default, 147.6ms/página (~2min13s
+extrapolado para os 903 páginas do PEREIRA); `strategy='text'`,
+304.6ms/página (~4min35s) — mais caro e ainda mais falso positivo.
+Sinal geométrico manual: as 903 páginas inteiras em 45s (~50ms/página),
+mas descartado pelo falso positivo, não pelo custo.
+
+**Decisão**: não implementar contenção de tabela nesta rodada. Tabelas
+continuam sem tratamento especial — texto corrido, comportamento atual
+preservado. Falso negativo (tabela não tratada) é aceito como status
+quo; falso positivo (bibliografia virando bloco monoespaçado) é o risco
+assimétrico que motivou a rejeição dos 3 sinais. Mesmo padrão da Fase
+4.5 (supressão de título de capa: investigada, sem solução viável
+identificada, não forçada) — "não é viável com o método disponível" é
+tratado aqui como conclusão de investigação válida, não como tarefa
+inacabada.
+
+# Décimo sétimo episódio — detecção de imagem em página escaneada: premissa original falsa, sinal substituto promissor mas subamostrado
+
+Investigação motivada pelo mesmo gap do décimo quarto episódio: extração
+de imagem de corpo funciona no caminho nativo (`get_text("dict")`), mas
+não existe equivalente no caminho OCR — `extrair_texto_pagina()`
+(`foliant.py:883-890`) roda `pytesseract.image_to_data()` só para
+reconstruir texto, nunca para localizar regiões não-textuais.
+Investigação pura, nenhum código de produção alterado.
+
+**Premissa original — falsa**: a hipótese de partida era que
+`image_to_data()` retorna `conf == -1` para blocos que o Tesseract não
+reconhece como texto, e que esse sinal poderia indicar região de
+imagem. Inspecionado o dict bruto em várias páginas: `conf == -1`
+**nunca ocorre no nível de palavra** (`level == 5`) — só nos níveis
+agregados 1-4 (página/bloco/parágrafo/linha), que são estruturais e
+aparecem em TODA página, com ou sem imagem (confirmado nas 208 páginas
+do teste negativo abaixo: zero exceções). Como sinal de "região não
+reconhecida como texto", `conf == -1` é inútil — não discrimina nada.
+
+**Sinal substituto — palavras de confiança muito baixa (`conf < 10`,
+nível palavra)**: o Tesseract não recusa reconhecer marcas não-textuais
+(traços de gráfico, eixos, barras) — ele as lê como texto e produz
+"palavras" garbled com confiança próxima de zero (ex.: `conf=0`), não
+`conf=-1`. Esse é o sinal real disponível.
+
+**Amostra positiva conhecida**: `samples/livro_completo_208pg.pdf`
+(208p., 100% escaneado, obra "Gil") tem exatamente **uma** figura de
+conteúdo real confirmada visualmente em todo o livro — página de índice
+178 (0-indexed), "Figura 20.2", um cronograma/gráfico de Gantt.
+Confirmado por dois métodos independentes: inspeção visual de contact
+sheet das 208 páginas e ranking por densidade de tinta (fração de
+pixels escuros no thumbnail) — nenhum outro candidato a figura de
+conteúdo apareceu nos dois métodos combinados (as demais páginas de
+maior densidade são títulos de capítulo em negrito grande, não
+figuras). `image_to_data()` na pg. 178 produz 7 palavras `conf<10`,
+espacialmente dentro da região do gráfico (x 364-1445 de 1606, y
+713-2068 de 2290) — coincide com a posição real confirmada
+visualmente.
+
+**Teste negativo AMPLIADO (obrigatório, rodado no livro completo, não
+em amostra)**: as 208 páginas do livro inteiro, não só 2-3.
+`conf<10` sozinho **não discrimina**: 84/208 páginas (40%) têm pelo
+menos 1 palavra `conf<10` — inclusive várias páginas de prosa pura sem
+nenhuma figura. A pg. 126 (prosa pura, sem figura) tem **17** palavras
+`conf<10` — mais que a própria página com figura real (7). Contagem ou
+fração de palavras de baixo-conf, isoladamente, teria dado falso
+positivo maior que o verdadeiro positivo.
+
+**Filtro de tamanho testado**: altura de bbox (`height`, em px de
+render a 200 DPI) separa os dois grupos de forma nítida. Palavras
+`conf<10` de página de prosa comum têm no máximo ~76px de altura
+(ruído de OCR em pontuação solta ou palavra isolada mal lida); a pg.
+178 tem 4 das 7 palavras `conf<10` com altura entre 186px e 664px —
+2,5x a 8,7x mais altas que qualquer falso positivo observado. Com
+limiar `height > 100px`: **0 falsos positivos nas 207 páginas
+negativas** (nenhuma delas tem qualquer palavra `conf<10` com altura
+>100px) e a página 178 mantém 4 palavras qualificadas. Mecanismo
+provável: o Tesseract funde múltiplas "linhas" de marcas não-textuais
+(eixo rotacionado, barras) numa única bbox de "palavra" alta, porque
+não há estrutura de linha de base para segmentar — comportamento que
+não ocorre em texto real, mesmo mal reconhecido.
+
+**Risco residual explícito — N=1 no positivo**: ao contrário do teste
+negativo (207 páginas reais, resultado forte), o teste positivo tem
+uma única figura conhecida disponível no corpus atual do projeto. Os
+outros PDFs escaneados de amostra (`001-080.pdf`, `081-160.pdf`,
+`161-208.pdf`) são a MESMA obra "Gil" (confirmado em
+`scripts/calibracao_ocr_resultados/RELATORIO.md`), não uma segunda
+figura independente; o PEREIRA (903p.) é quase todo nativo (só 1
+página cai no caminho OCR); o "Fundamentals" é nativo com poucas
+páginas OCR, sem figura escaneada conhecida. Calibrar e validar um
+limiar (`height > 100px`) contra uma única figura positiva é o mesmo
+tipo de risco amostral que derrubou o sinal de tabela no décimo sexto
+episódio — só que aqui o risco está do lado do RECALL (o mecanismo que
+gera o sinal — fusão de marcas rotacionadas/densas numa bbox alta —
+pode não se repetir em outros tipos de figura, ex. foto ou diagrama de
+linha limpo sem marca rotacionada), não do lado do falso positivo, que
+foi testado a fundo e ficou zerado.
+
+**Extração da região (viabilidade, não custo proibitivo)**: recortar a
+região candidata do pixmap já renderizado (`pixmap.crop(...)` via PIL)
+custa ~12ms, desprezível. Salvar o recorte custa ~0.7s em PNG ou
+~0.14s em JPEG (medido num recorte de página inteira, pg. 178) — caro
+comparado a um recorte típico bem menor, mas ainda pequeno frente ao
+custo-base de ~6,08s/página já pago pelo próprio `image_to_data()`
+(Fase 4.15). Diferença estrutural do caminho nativo: lá o byte original
+da imagem embutida é gravado direto (`write_bytes`, grátis); no
+caminho OCR não existe imagem original — só o raster já renderizado a
+200 DPI — então qualquer imagem extraída aqui é necessariamente uma
+recompressão com perda desse raster, nunca a qualidade da imagem
+original do scanner.
+
+**Decisão**: não implementar nesta rodada. Diferente do décimo sexto
+episódio (falso positivo genuíno e irredutível em qualquer limiar), o
+sinal aqui passou limpo no teste negativo completo — mas com evidência
+positiva grande demais insuficiente (N=1) para calibrar um limiar de
+produção com confiança. Próximo passo, se este caminho for retomado:
+localizar ou adquirir um segundo livro escaneado com figura de
+conteúdo real e de tipo visual diferente (foto ou diagrama sem marca
+rotacionada) antes de fixar `height > 100px` como limiar de produção —
+sem isso, "0 falso positivo" é um resultado real mas não garante
+recall aceitável fora do único caso testado.
+
+# Décimo oitavo episódio — mapeamento de extração de figura em página escaneada: o sinal do 17º episódio detecta a coisa errada, e o corpus não tem o caso-alvo
+
+Rodada de mapeamento e análise, sem implementação, antes de decidir a
+direção de extração de figura no caminho OCR. Três achados, todos
+medidos nesta máquina (macOS 13.7.8, Tesseract 5.5.3, RENDER_DPI=200).
+
+**1. O sinal do décimo sétimo episódio é um detector de texto
+rotacionado, não de figura.** O 17º episódio registrou que palavras
+`conf<10` com `height > 100px` marcam região de figura, e hipotetizou o
+mecanismo como "o Tesseract funde múltiplas linhas de marcas
+não-textuais numa única bbox de palavra alta, porque não há estrutura
+de linha de base para segmentar". Extraí o TSV bruto da pg. 178 do
+`livro_completo_208pg.pdf` e inspecionei as 18 palavras `conf<10` uma
+a uma. Não são marcas não-textuais fundidas — são os rótulos de linha
+do gráfico de Gantt, que estão **impressos rotacionados 90°** na
+página, lidos de lado:
+
+```
+h=414 w= 55 conf=0.0 'otlerizr/otist|bilerler(tr/or]'
+h=270 w= 38 conf=0.0 'OpdeZITeUonprINdO'  -> "Operacionalização"
+h=206 w= 38 conf=0.0 'sasopesinbsad'      -> "pesquisadores"
+h=194 w= 37 conf=0.0 'opseongadsa'        -> "Especificação"
+h=161 w= 36 conf=0.0 'opóeiogera'         -> "Elaboração"
+h= 93 w= 29 conf=3.4 'BI9JoD'             -> "Coleta"
+```
+
+Todas com largura entre 24px e 55px — são palavras únicas viradas, não
+blobs. O resultado negativo do 17º episódio (0 falsos positivos em 207
+páginas) continua válido e continua forte. O que muda é a
+interpretação do recall: não é "N=1, recall desconhecido" — é **recall
+estruturalmente limitado a figuras que contenham texto rotacionado**.
+O limiar não dispararia numa foto, num gráfico de barras com rótulos
+horizontais, ou num fluxograma com caixas de texto na horizontal.
+Calibrar `height > 100px` contra mais amostras do mesmo tipo visual
+não resolveria isso — confirmaria o artefato.
+
+**2. `ocr_photo` do hOCR: testado e reprovado como detector, pelo mesmo
+perfil do `find_tables()` do 16º episódio.** A produção usa
+`image_to_data` (TSV), que carrega `block_num` como identificador mas
+**não carrega tipo de bloco**. O Tesseract 5.5.3 já classifica regiões
+e expõe isso em hOCR/ALTO/PAGE — saídas que o projeto nunca usou.
+Custo marginal é essencialmente zero: `tesseract entrada saida tsv
+hocr` produz os dois arquivos numa **única invocação**, com o
+reconhecimento compartilhado; só a serialização duplica.
+
+Na FDE p.112 o Tesseract emite 12 `ocr_photo`, 25 `ocr_separator` e 2
+`ocr_caption`. Teste negativo em 12 páginas de prosa escaneada do
+`001-080.pdf`: 11 das 12 disparam pelo menos um `ocr_photo`, mas todos
+os de área ≥1% são a **sombra de lombada na borda do scan** (68-85px
+de largura por ~2290px de altura, razão de aspecto ~1:30, filtrável
+por geometria trivial); o resto fica abaixo de 0,5% de área. Precisão,
+portanto, seria gerenciável.
+
+O recall é que mata. Na pg. 178 — a única figura de conteúdo real
+conhecida em todo o corpus escaneado — o hOCR emite **um único bloco
+`ocr_photo` de largura zero** (`bbox=(0,1324,0,1794)`). Um gráfico de
+line-art sobre papel escaneado não é classificado como foto. As
+páginas vizinhas (176, 177, 179, 180) não emitem nada relevante.
+
+É exatamente o perfil do `find_tables()` no décimo sexto episódio:
+precisão aceitável, recall ~0 no caso que motivou a investigação.
+Decisão: não implementar como detector. Vale conhecer como sinal
+auxiliar barato caso uma rodada futura componha vários sinais, mas não
+sustenta uma rodada sozinho.
+
+**3. Viabilidade computacional de método clássico: resolvida, e não era
+o gargalo.** A restrição real não era CPU — era que `numpy`, OpenCV,
+scipy e onnxruntime **não estão instalados** (o `.venv` tem só pillow,
+pymupdf, pytesseract, packaging, pyinstaller), e o projeto tem norma
+explícita contra introduzir numpy (`scripts/calibrar_ocr.py:60-73`).
+Mas o Pillow já expõe os operadores morfológicos em C:
+`ImageFilter.MaxFilter` (dilatação), `MinFilter` (erosão),
+`Image.point()` (binarização), `Image.resize(BOX)` (downsample por
+área). Protótipo medido — binarização, downsample 8x (1606x2290 ->
+200x286), closing 5x5, componentes conectados em Python puro sobre a
+imagem reduzida:
+
+| Página | Pillow | CC Python | maior comp: área / fill |
+|---|---|---|---|
+| Gil pg.178 (figura) | 0,055s | 0,056s | 60,5% / 68,8% |
+| FDE p.112 (figura) | 0,058s | 0,041s | 39,1% / 48,0% |
+| Gil-80 p.22 (prosa) | 0,103s | 0,178s | 63,5% / 82,8% |
+| Gil-80 p.46 (prosa) | 0,083s | 0,098s | 64,4% / 82,4% |
+| Gil-80 p.70 (prosa) | 0,087s | 0,138s | 68,8% / 84,1% |
+
+0,10-0,29s por página, contra os 6,08s/página já pagos pelo OCR —
+2% a 5% de overhead, com zero dependência nova. A questão "CPU-only em
+hardware de 2016 aguenta método clássico?" está respondida: aguenta.
+
+O que **não** está respondido é o poder discriminante. A área do maior
+componente não separa nada (figura 60,5% contra prosa 63,5-68,8% —
+sobreposição direta, a mesma armadilha do 16º episódio). O *fill
+ratio* aponta uma direção (figuras 48,0-68,8%, prosa 82,4-84,1%), mas
+com n=2 contra n=3 e apenas 13,6 pontos entre o pior caso de figura e
+o melhor de prosa. Isso é uma pista, não um limiar — e fixar um corte
+aí agora seria repetir o erro amostral do 16º episódio com amostra
+ainda menor.
+
+**Decisão da rodada**: nenhum detector, nenhum limiar, nenhuma
+dependência nova. O gargalo não é método — é amostra (ver
+`ARCHITECTURE.md`, "Estado do corpus"). O trabalho executado nesta
+rodada foi a validação do caminho de entrega, que está em produção
+hoje e nunca tinha sido inspecionado.
+
+# Décimo nono episódio — teste em Kindle real: três defeitos do Foliant, um da Amazon, e a primeira amostra real de página-figura (N=7)
+
+Primeiro teste do EPUB num e-reader de verdade (Kindle 10, via Send to
+Kindle — ou seja, a Amazon reconverteu o EPUB para formato próprio
+antes de exibir). Quatro defeitos relatados. Investigação sem correção,
+exceto a checagem do item 4.
+
+**Separar defeito do Foliant de efeito da Amazon** foi o primeiro
+passo, e mudou a conclusão de um dos quatro: abrindo o `.epub`
+descompactado no Chrome (instrumento validado na Fase 4.20), três dos
+quatro defeitos **já existem no arquivo antes** de a Amazon tocar nele;
+o quarto não.
+
+## 1. Página-figura lida como OCR — origem Foliant, e o achado mais importante
+
+A Figura 3-1 (MAD Landscape, PDF idx 112) não aparece como imagem: o
+`livro_split_112.html` (`pg-113`) tem **1964 caracteres de texto lixo e
+zero `<img>`**. Mecanismo, direto no código: `extrair_texto_pagina`
+([foliant.py:886](foliant.py#L886)) decide pelo texto nativo —
+`texto_nativo = pagina.get_text("text").strip()`; vazio, cai no ramo
+OCR ([foliant.py:899-901](foliant.py#L899-L901)), e
+`extrair_linhas_ocr` não tem caminho de imagem nenhum. O Tesseract lê
+as marcas do diagrama como palavras e devolve lixo.
+
+**A legenda grudada é consequência disso, não um bug independente.** A
+legenda "Figure 3-1. Matt Turck's MAD data landscape" está impressa na
+página **seguinte** (idx 113), em texto nativo. Como não há bloco de
+imagem antes dela naquela página, `_RE_LEGENDA_FIGURA`
+([foliant.py:604](foliant.py#L604)) nunca dispara — a heurística só
+olha o bloco imediatamente **após** um bloco `type==1`. A legenda vira
+linha de texto comum e é fundida ao parágrafo seguinte. Na mesma
+página, a legenda da Figura 3-2, cuja imagem é nativa e está logo
+acima, virou `<figcaption>` corretamente. É o risco residual já
+declarado em [foliant.py:590-603](foliant.py#L590-L603) ("legenda ANTES
+da imagem ou separada por texto intermediário"), agravado por a figura
+estar em **outra página**.
+
+### A amostra que faltava: N=7, e todas são páginas-figura
+
+O FDE tem 210 páginas, 203 nativas e **7 sem texto nativo**: idx **0,
+10, 18, 27, 112, 153, 158**. Inspecionadas visualmente uma a uma:
+
+| idx | pg-N | o que é |
+|---|---|---|
+| 0 | pg-1 | capa (já tratada por `extrair_capa`) |
+| 10 | pg-11 | screenshot do Google Trends |
+| 18 | pg-19 | pirâmide "Data Science Hierarchy of Needs" |
+| 27 | pg-28 | gráfico de barras "Fastest Growing Tech Occupations" |
+| 112 | pg-113 | MAD Landscape |
+| 153 | pg-154 | diagrama "Data Engineering Life Cycle" |
+| 158 | pg-159 | diagrama "Bounded / Unbounded Data" |
+
+**Todas as 7 são páginas-figura.** É a primeira amostra real do caso
+"página inteira é figura" registrada no projeto — a Fase 4.20 tinha
+documentado N=0 para *figura embutida em página de texto*, que continua
+N=0; esta amostra é de outra coisa, e é justamente a que estava
+causando dano.
+
+Todas as 7 têm **exatamente 1 bloco `type==1`**. Cobertura da página:
+capa 100%, as outras 6 entre **56,7% e 58,2%**.
+
+### Teste negativo: a geometria por página, sozinha, é catastrófica
+
+Se o critério fosse só "sem texto nativo + bloco de imagem dominante",
+aplicado página a página:
+
+| livro | páginas escaneadas | cobertura mediana | páginas com cobertura > 55% |
+|---|---|---|---|
+| Gil 80p | 80 | 99,8% | **77 / 80** |
+| Gil 208p | 208 | 100,0% | **196 / 208** |
+
+Num livro 100% escaneado **praticamente toda página** passaria no teste
+geométrico — e cada falso positivo aqui significa **perder o OCR de uma
+página inteira de texto**, o pior erro possível neste projeto. O gate
+de documento ("majoritariamente nativo") não é um refinamento: é o que
+faz todo o trabalho.
+
+**E esse gate não é calibrável com o corpus atual.** Os dois extremos
+disponíveis são 0% de páginas nativas (Gil, os dois) e 96,7% (FDE,
+203/210). Não existe nenhum livro intermediário no repositório —
+qualquer limiar entre 0 e 96,7 separa os casos conhecidos igualmente
+bem, o que é outra forma de dizer que a amostra não escolhe limiar
+nenhum. Fixar um número agora seria inventá-lo. Mesmo padrão do décimo
+sexto episódio, e o motivo de esta rodada não implementar nada.
+
+### Tensão com a invariante da Fase 4.20
+
+A invariante diz: no caminho OCR, o recorte **não remove** o texto OCR
+da região, porque falso positivo deve custar redundância, nunca perda
+de texto. Aqui o texto OCR é **lixo puro** — mantê-lo ao lado da imagem
+preservaria exatamente as ~4 telas de ruído que motivaram o relato.
+
+As duas coisas são conciliáveis porque tratam de casos diferentes, e a
+distinção precisa ficar explícita antes de qualquer implementação: a
+invariante protege **recorte de região dentro de uma página com texto
+real em volta**; o caso das 7 páginas é **a página inteira ser a
+figura**, onde não existe texto real nenhum a preservar. Registrado
+como tensão a resolver com decisão explícita, não como já resolvida.
+
+### Por que `com_ressalva` não disparou
+
+O gate é `if paragrafos:` ([foliant.py:1330](foliant.py#L1330)). A
+página produziu 1964 caracteres de lixo — `paragrafos` não é vazio,
+então o fluxo entra no primeiro ramo e nunca chega ao
+`paginas_sem_texto.append` de [foliant.py:1337](foliant.py#L1337). O
+critério distingue "nenhum texto" de "algum texto"; **não distingue
+texto de lixo**. É exatamente a lacuna que a Fase 4.15 registrou ao
+adiar o threshold de confiança — e o caso real N=1 que ela citou
+(`conf_media=37,09`) é esta mesma página.
+
+## 2. Números de nota soltos — origem Foliant
+
+Confirmado: são chamadas de nota sobrescritas extraídas como bloco
+próprio. No PDF idx 110, o "1" de "relational databases, C¹" é:
+
+```
+bloco 5   bbox=(212.4, 442.1, 218.6, 454.6)
+text='1'  size=11.25pt (mediana da página 15.00pt, razão 0.75)
+flags=0 [NÃO marcado como superscript]  font=ArialMT
+```
+
+Dois problemas somados:
+1. O PDF põe o sobrescrito num **bloco separado**, não como span dentro
+   da linha — então ele vira uma linha própria, depois um `<p>` próprio.
+2. **A ordem da lista de blocos não é a ordem visual.** O bloco 5 está
+   em y=442, dentro da faixa do bloco 2 (369-498), mas vem **por último**
+   na lista que `get_text("dict")` devolve. Como
+   `extrair_linhas_nativas` percorre os blocos em ordem de lista
+   ([foliant.py:678](foliant.py#L678)), o número cai no fim da página.
+
+Daí o padrão relatado: a página termina em frase cortada e logo abaixo
+aparece o número solto. `flags=0` é relevante para qualquer correção
+futura: **o sinal de sobrescrito não está no flag** — o PDF levanta o
+glifo por posição. Sobram tamanho relativo (0,75) e o fato de o bloco
+ser um único dígito.
+
+Contagem no EPUB: **40 parágrafos compostos só de dígitos**, numerados
+em sequência que reinicia por capítulo (1-18, depois 1-6, etc.) — o
+padrão de numeração de notas.
+
+## 3. Quebra de página forçada — origem Foliant, mas removê-la não resolve
+
+Das 210 seções com parágrafo, **94 (44,8%) terminam em frase cortada**
+(última letra minúscula ou vírgula) e 26 (12,4%) terminam num parágrafo
+só-dígito do item 2.
+
+O ponto que não era óbvio: **remover `--page-breaks-before`
+([foliant.py:1374](foliant.py#L1374)) não corrigiria a frase cortada.**
+`unir_linhas_em_paragrafos` roda **por página**, antes da geração de
+HTML — um parágrafo partido na virada de página já é dois `<p>`
+distintos. Verificado no arquivo: `pg-111` termina em "...Every vendor
+will say their product is going to" e `pg-112` começa em "change the
+industry and..." — a mesma frase, em dois `<p>` de seções diferentes.
+Tirar a quebra aproximaria os dois visualmente, mas cada um manteria
+`text-indent: 1.2em` e margem própria: continuaria lendo como dois
+parágrafos.
+
+A correção real seria fusão de parágrafo **entre páginas**, o que exige
+segurar o último parágrafo da página anterior — mudança pequena em RAM
+(um parágrafo), mas que altera a fronteira de streaming e interage com
+o cabeçalho repetido e com a detecção de título.
+
+O que depende da quebra hoje: nada funcional. Os `id="pg-N"` são
+usados pela tela de ressalva do app
+(`desktop/src/main.js:697-700`), mas vêm do atributo `id`, não do
+`page-break`. A flag também governa como o Calibre fatia os
+`livro_split_NNN.html`; sem ela o corte passaria a ser por tamanho.
+
+## 4. Legenda justificada — NÃO é do Foliant
+
+Único dos quatro que não está no arquivo. Medido no Chrome, no
+`pg-114` do EPUB gerado:
+
+```
+body.textAlign=start | figure.textAlign=center
+figcaption.textAlign=center | figcaption.fontSize=12px | figcaption.textIndent=0px
+```
+
+A legenda **já sai centralizada** e o corpo do documento nem é
+justificado. A justificação observada vem da conversão Send to Kindle
+ou da configuração de alinhamento do próprio Kindle, que sobrepõe o CSS
+do livro. Nada a corrigir no Foliant por esta evidência.
+
+Uma fragilidade real, porém, fica anotada: o `center` da legenda é
+**herdado** de `figure`, não declarado em `figcaption`
+([foliant.py:171-173](foliant.py#L171-L173)). Se um conversor achatar
+ou descartar o elemento `figure` — plausível em KF8 —, a herança se
+perde. Declarar `text-align: center` direto no `figcaption` seria
+robustez barata contra isso, mas é hipótese sobre o conversor da
+Amazon, não medição: não aplicado nesta rodada.
+
+## Nota sobre os arquivos de teste
+
+Os dois `.epub` em `saida/trilha_a/` tiveram
+`META-INF/calibre_bookmarks.txt` gravado dentro deles pelo
+`ebook-viewer` do Calibre durante a validação da Fase 4.20 (posição de
+leitura). Todos os arquivos de conteúdo mantêm mtime original e a
+renderização não muda, mas os `.epub` no disco não são mais
+byte-idênticos aos gerados. Vale saber ao comparar hashes.
