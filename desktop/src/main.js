@@ -486,6 +486,19 @@ function processarLinha(linha, estadoLinhas) {
     log(linha);
     return;
   }
+  // FIGURAS: (ver foliant.py, main) — páginas que são uma figura
+  // inteira e entraram no livro como imagem. NÃO é ressalva: a página
+  // foi convertida corretamente. Só alimenta a linha informativa da
+  // tela de conclusão, nunca muda o estado final (pronto/com_ressalva).
+  if (linha.startsWith("FIGURAS:")) {
+    try {
+      estadoLinhas.figuras = JSON.parse(linha.slice("FIGURAS:".length));
+    } catch {
+      /* mal-formada: segue sem o detalhe, log bruto abaixo */
+    }
+    log(linha);
+    return;
+  }
   // ANALISE: (emitido pelo pipeline real, ver foliant.py) não tem mais
   // UI própria em "convertendo" — a contagem nativas/escaneadas já foi
   // mostrada em "antes de converter" via --inspect. Cai no log bruto
@@ -503,13 +516,17 @@ async function aoClicarCancelar() {
   if (!havia) log("Nada para cancelar (nenhuma conversão em andamento).");
 }
 
-async function finalizarConversaoComSucesso(ressalva) {
+async function finalizarConversaoComSucesso(ressalva, figuras) {
   await invoke("registrar_epub_gerado", { caminho: sessao.saida });
   const paginas = ressalva?.paginas_sem_texto;
+  // `paginasFigura` viaja para os DOIS estados finais: a informação é a
+  // mesma tenha havido ressalva ou não, e não influencia a escolha entre
+  // eles (página-figura é sucesso, não ressalva).
+  const paginasFigura = figuras?.paginas_figura || [];
   if (paginas && paginas.length > 0) {
-    transicionarPara("com_ressalva", { paginasSemTexto: paginas });
+    transicionarPara("com_ressalva", { paginasSemTexto: paginas, paginasFigura });
   } else {
-    transicionarPara("pronto");
+    transicionarPara("pronto", { paginasFigura });
   }
 }
 
@@ -550,7 +567,7 @@ async function iniciarConversao() {
         irParaAntesDeConverter({ avisoCancelamento: true });
       } else if (dados.code === 0) {
         log("Processo concluído com sucesso.");
-        await finalizarConversaoComSucesso(estadoLinhas.ressalva);
+        await finalizarConversaoComSucesso(estadoLinhas.ressalva, estadoLinhas.figuras);
       } else {
         log(`Processo finalizado com erro (código ${dados.code}).`);
         transicionarPara("falha", { motivo: estadoLinhas.falha?.motivo });
@@ -641,7 +658,7 @@ function ligarSegmentadoDispositivo() {
   mostrarGuiaAparelho("Tablet Android");
 }
 
-function renderizarPronto() {
+function renderizarPronto(dados = {}) {
   const sucessoEl = telaEl.querySelector("#sucesso");
   sucessoEl.textContent = "";
 
@@ -688,9 +705,69 @@ function renderizarPronto() {
   conteudo.append(titulo, caminho, acoes);
   sucessoEl.append(criarIcone("circle-check", "icone"), conteudo);
 
+  renderizarFiguras(dados.paginasFigura);
   popularLogTemplate();
   ligarSegmentadoDispositivo();
   telaEl.querySelector("#btn-reiniciar").addEventListener("click", () => irParaSelecionar());
+}
+
+// Linha informativa de página-figura, compartilhada pelas DUAS telas de
+// conclusão (pronto e com_ressalva) — a informação é a mesma nos dois
+// casos. Tom `info` do design system (azul de marca), ícone `info`:
+// é fato de sucesso, não aviso, então nada de âmbar/terracota nem
+// ícone de alerta. `paginasFigura` vem de FIGURAS: (ver foliant.py).
+//
+// Aparece SEMPRE que houver ao menos uma página-figura, nunca só quando
+// a quantidade parecer fora do esperado: "fora do esperado" exigiria um
+// limiar que a amostra do projeto não sustenta, um aviso esporádico
+// seria lido como alarme, e o falso positivo plausível (um anexo
+// escaneado tratado como figura) aparece justamente como um número
+// BAIXO — que um filtro de anomalia esconderia no caso em que importa.
+// É também a única forma de o usuário, que tem o PDF na mão, conferir.
+function renderizarFiguras(paginasFigura = []) {
+  const containerEl = telaEl.querySelector("#figuras-info");
+  if (!containerEl) return;
+  if (paginasFigura.length === 0) {
+    containerEl.hidden = true;
+    return;
+  }
+  containerEl.hidden = false;
+  containerEl.className = "callout callout-info";
+  containerEl.setAttribute("role", "status");
+  containerEl.textContent = "";
+
+  const conteudo = document.createElement("div");
+
+  const titulo = document.createElement("strong");
+  titulo.className = "callout-titulo";
+  titulo.textContent = "Páginas que são figura";
+
+  const corpo = document.createElement("p");
+  corpo.className = "callout-corpo";
+  const n = paginasFigura.length;
+  corpo.textContent =
+    n === 1
+      ? "1 página do PDF é uma figura que ocupa a página toda. Ela entrou no livro como imagem."
+      : `${n} páginas do PDF são figuras que ocupam a página toda. Elas entraram no livro como imagem.`;
+
+  const lista = document.createElement("p");
+  lista.className = "ajuda";
+  lista.textContent = `Páginas: ${paginasFigura.join(", ")}`;
+  lista.hidden = true;
+
+  const acoes = document.createElement("div");
+  acoes.className = "callout-acoes";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn-fantasma";
+  btn.textContent = "Ver a lista de páginas";
+  btn.addEventListener("click", () => {
+    lista.hidden = !lista.hidden;
+  });
+  acoes.appendChild(btn);
+
+  conteudo.append(titulo, corpo, acoes, lista);
+  containerEl.append(criarIcone("info", "icone"), conteudo);
 }
 
 // Disparado quando construir_html (foliant.py) reporta, via RESSALVA:,
@@ -716,6 +793,7 @@ function renderizarComRessalva(dados = {}) {
     if (listaEl) listaEl.hidden = !listaEl.hidden;
   });
 
+  renderizarFiguras(dados.paginasFigura);
   popularLogTemplate();
   ligarSegmentadoDispositivo();
   telaEl.querySelector("#btn-reiniciar").addEventListener("click", () => irParaSelecionar());

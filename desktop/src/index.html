@@ -243,6 +243,12 @@
     <template id="tpl-pronto">
       <div id="sucesso" class="callout callout-sucesso"></div>
 
+      <!-- Preenchido por renderizarFiguras() (main.js) quando o
+           pipeline emite FIGURAS: — informação factual de sucesso,
+           tom `info`, nunca aviso. Fica oculto se não houver
+           página-figura. -->
+      <div id="figuras-info" hidden></div>
+
       <div class="cartao">
         <h2 class="cartao-titulo">Como levar para o aparelho</h2>
         <div class="segmentado" id="segmentado-dispositivo">
@@ -290,6 +296,11 @@
           <p class="ajuda" id="ressalva-lista-paginas" hidden></p>
         </div>
       </div>
+
+      <!-- Mesmo bloco de `tpl-pronto`: página-figura é sucesso e a
+           informação independe de ter havido ressalva. Fora do callout
+           de aviso acima, de propósito — não deve herdar o tom âmbar. -->
+      <div id="figuras-info" hidden></div>
 
       <div class="cartao">
         <h2 class="cartao-titulo">Como levar para o aparelho</h2>

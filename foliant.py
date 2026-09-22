@@ -850,9 +850,152 @@ def linhas_inicio_paragrafo(
     return resultado
 
 
+# Cobertura máxima (área do bbox da imagem ÷ área da página) para uma
+# página SEM texto nativo ser tratada como "página-figura" em vez de
+# página escaneada.
+#
+# ESTE NÚMERO É ESCOLHA ARBITRÁRIA CONSERVADORA, NÃO CALIBRAÇÃO — e a
+# distinção é o ponto todo. Os dados medidos (TRACE.md, vigésimo
+# episódio: TODAS as páginas de 4 documentos, sem amostragem) dizem
+# apenas onde o número NÃO pode estar:
+#   - acima de 97,18% — menor cobertura observada numa página que é um
+#     scan de página inteira (PEREIRA, idx 0). O Gil (única obra 100%
+#     escaneada do corpus, 288 páginas) tem mínimo 98,93%;
+#   - abaixo de 58,16% — maior cobertura observada nas 6 páginas-figura
+#     reais (FDE; a faixa inteira é 56,74%-58,16%).
+# Qualquer valor entre 58,16% e 97,18% separa os casos conhecidos
+# IGUALMENTE BEM: a amostra não escolhe número nenhum, do mesmo modo que
+# não escolhe o gate de documento (ver `classificar_pagina_figura`).
+# Fixar 0.70 é uma decisão, não uma medição, e está declarada como tal.
+#
+# A posição dentro da faixa é assimétrica de propósito: 11,8 pontos
+# acima do teto das figuras conhecidas (folga para o template de outra
+# editora — as 6 do FDE saem de uma caixa de layout fixa, com margens
+# quase idênticas entre si, então o teto medido é do template, não da
+# classe) e 27,2 pontos abaixo do menor scan de página inteira
+# observado. BAIXAR este valor torna o critério MAIS seguro (classifica
+# menos páginas ⇒ mais falso negativo, que é o erro barato); SUBIR torna
+# menos seguro. Não subir sem amostra nova de scanner.
+COBERTURA_MAXIMA_PAGINA_FIGURA = 0.70
+
+
+def classificar_pagina_figura(
+    pagina: "pymupdf.Page", doc_tem_pagina_nativa: bool
+) -> dict | None:
+    """Decide se uma página SEM texto nativo é uma "página-figura" (a
+    página inteira é um gráfico/diagrama/foto diagramado) em vez de uma
+    página escaneada. Retorna o bloco de imagem (`get_text("dict")`, com
+    os bytes já embutidos) ou None.
+
+    Motivação real: no FDE, 6 páginas que são figura inteira viravam ~4
+    telas de lixo de OCR no EPUB, sem nenhum `<img>` (ver TRACE.md,
+    décimo nono episódio).
+
+    NÃO GATEIA O OCR. O chamador (`extrair_texto_pagina`) roda o
+    Tesseract nesta página de qualquer forma e MANTÉM o texto produzido
+    — esta função só decide se a imagem também entra no fluxo. Pular o
+    OCR economizaria ~6s em ~6 páginas de um livro de 210
+    (TEMPO_OCR_MEDIA_S), e em troca jogaria fora a saída do OCR
+    (confiança, volume de palavras), que é o segundo sinal independente
+    necessário para qualquer decisão futura de SUPRIMIR esse texto. É
+    falsa economia, e a assimetria de custo depende de não fazê-la:
+    mantendo o texto, o pior caso de um falso positivo é uma imagem
+    redundante ao lado do texto real — nunca perda de conteúdo. É a
+    invariante da Fase 4.20 (ARCHITECTURE.md) aplicada a este caso.
+
+    Os 5 critérios, todos necessários:
+
+    (0) O documento tem ao menos UMA página com texto nativo. Gate de
+        documento em forma deliberadamente NÃO-numérica: o corpus só
+        oferece os extremos 0% (Gil) e 96,7% (FDE, 203/210), sem nenhum
+        caso intermediário — qualquer limiar percentual entre os dois
+        separaria os casos conhecidos igualmente bem, ou seja, seria
+        inventado (ver TRACE.md, décimo nono episódio). "Tem ao menos
+        uma nativa" é o único corte que a amostra sustenta de fato.
+        Guarda fraca e sabidamente insuficiente sozinha — um documento
+        majoritariamente nativo PODE conter página de texto escaneado
+        (anexo digitalizado, errata, fac-símile); quem carrega o
+        critério é (3). VERIFICADO: com este gate forçado a True, as 288
+        páginas do Gil continuam dando 0 positivos, ou seja a geometria
+        sozinha já as exclui e o gate não é o que sustenta o critério
+        (era, sob o critério anterior sem faixa de cobertura — ver
+        TRACE.md, décimo nono episódio).
+
+    (1) Página sem texto nativo — mesmo predicado de
+        `extrair_texto_pagina`/`contar_nativas`, nenhum número novo.
+        Redundante com o call site atual, mantido para a função ser
+        correta independentemente de quem a chama.
+
+    (2) Exatamente 1 bloco `type == 1`, não-degenerado. MEDIDO nas 1.401
+        páginas dos 4 documentos: das 296 páginas SEM texto nativo (as
+        únicas que chegam aqui), NENHUMA tem mais de um bloco de imagem.
+        O corpus tem 5 páginas com 2 blocos (FDE idx 37 e 170, PEREIRA
+        idx 644, 685 e 710), mas todas as 5 têm texto nativo e param no
+        critério (1) — não são caso de teste para este critério. Ou
+        seja, ">1 imagem" não tem NENHUM caso positivo para inspecionar,
+        e recusar é a opção de falso negativo (barata).
+        `== 0` exclui as páginas verdadeiramente EM BRANCO (3 no Gil-80,
+        12 no Gil-208: zero imagem, zero texto, zero `get_drawings()`,
+        confirmadas visualmente) — ausência de conteúdo é categoria
+        própria, não "cobertura baixa". O piso de tamanho reusa
+        LARGURA_MINIMA_IMAGEM_CORPO_PT, já calibrada contra glifos
+        decorativos reais.
+
+    (3) Cobertura ≤ COBERTURA_MAXIMA_PAGINA_FIGURA — ver a justificativa
+        completa (e a declaração de arbitrariedade) na constante.
+
+    (4) Margem ESTRITAMENTE positiva nos 4 lados. Condição ">0": não
+        introduz número novo. MEDIDO: as 6 figuras do FDE têm as 4
+        margens entre 72pt e 88,5pt; o PEREIRA idx 0 encosta no topo e
+        na base (0pt); todas as páginas do Gil têm as 4 margens em 0pt.
+        Fato estrutural por trás: imagem de scanner encosta em ao menos
+        uma borda da página, figura diagramada é inserida por dentro.
+
+    RISCO RESIDUAL / CONDIÇÃO DE FALSEAMENTO: um scan recortado ao bloco
+    de texto E centralizado, dentro de um livro nativo (anexo
+    digitalizado numa dissertação, p.ex.), passa nos 5 critérios — o
+    bloco de texto de um livro típico ocupa ~55-70% da página, faixa que
+    se sobrepõe à das figuras conhecidas. Esse caso NÃO existe no corpus
+    e não é hipotético a ponto de ser ignorado. Em v1 ele não causa
+    dano: a página ganha uma `<figure>` redundante e mantém todo o texto
+    OCR. É exatamente por isso que v1 pode ser implementada apesar de a
+    condição de falseamento ser plausível."""
+    if not doc_tem_pagina_nativa:
+        return None
+    if pagina.get_text("text").strip():
+        return None
+
+    blocos_imagem = [b for b in pagina.get_text("dict")["blocks"] if b.get("type") == 1]
+    if len(blocos_imagem) != 1:
+        return None
+    bloco = blocos_imagem[0]
+
+    x0, y0, x1, y1 = bloco["bbox"]
+    largura, altura = x1 - x0, y1 - y0
+    if largura < LARGURA_MINIMA_IMAGEM_CORPO_PT or altura < LARGURA_MINIMA_IMAGEM_CORPO_PT:
+        return None
+
+    rect = pagina.rect
+    area_pagina = rect.width * rect.height
+    if area_pagina <= 0:
+        return None
+    if (largura * altura) / area_pagina > COBERTURA_MAXIMA_PAGINA_FIGURA:
+        return None
+
+    if x0 <= rect.x0 or y0 <= rect.y0 or x1 >= rect.x1 or y1 >= rect.y1:
+        return None
+
+    return bloco
+
+
 def extrair_texto_pagina(
-    doc: "pymupdf.Document", i: int, matriz_zoom: "pymupdf.Matrix", lang: str, destino_dir: Path
-) -> tuple[str, str | None, int, list[bool]]:
+    doc: "pymupdf.Document",
+    i: int,
+    matriz_zoom: "pymupdf.Matrix",
+    lang: str,
+    destino_dir: Path,
+    doc_tem_pagina_nativa: bool = False,
+) -> tuple[str, str | None, int, list[bool], bool]:
     """Extrai o texto de uma página e detecta o título de capítulo (se
     houver): usa a camada de texto nativa se existir, senão renderiza e
     faz OCR. Libera pixmap/imagem antes de retornar — nunca acumula mais
@@ -870,7 +1013,10 @@ def extrair_texto_pagina(
 
     Retorna (texto, título detectado ou None, nº de linhas consumidas
     pelo título, lista de "linha é início de parágrafo" alinhada 1:1 com
-    texto.splitlines()).
+    texto.splitlines(), página classificada como página-figura).
+
+    `doc_tem_pagina_nativa` só alimenta `classificar_pagina_figura` (ver
+    lá) — é o gate de documento, e vem de `contar_nativas` no chamador.
 
     Recuo de linha (Tarefa B) se aplica aos DOIS caminhos, com critérios
     calibrados separadamente (unidades diferentes — pixels de render no
@@ -894,7 +1040,7 @@ def extrair_texto_pagina(
             limiar_razao_tamanho=LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO,
         )
         titulo, n_linhas_titulo = detectar_titulo([(t, a) for t, a, _ in linhas_nativas])
-        return texto, titulo, n_linhas_titulo, inicio_paragrafo
+        return texto, titulo, n_linhas_titulo, inicio_paragrafo, False
 
     pixmap = pagina.get_pixmap(matrix=matriz_zoom)
     img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
@@ -905,7 +1051,30 @@ def extrair_texto_pagina(
     inicio_paragrafo = linhas_inicio_paragrafo(linhas_ocr, limiar_delta=LIMIAR_RECUO_DELTA_PX)
 
     titulo, n_linhas_titulo = detectar_titulo([(t, a) for t, a, _ in linhas_ocr])
-    return texto, titulo, n_linhas_titulo, inicio_paragrafo
+
+    # Página-figura: a imagem entra no fluxo, o texto do OCR acima
+    # CONTINUA INTEIRO (ver `classificar_pagina_figura` para por que o
+    # OCR roda mesmo aqui e por que o texto não é suprimido). O marcador
+    # vai na FRENTE — a imagem é o conteúdo da página, o texto é o que
+    # sobrou dela. `construir_html` separa marcadores do topo antes de
+    # fatiar título/cabeçalho, senão o fatiamento comeria a imagem.
+    bloco_figura = classificar_pagina_figura(pagina, doc_tem_pagina_nativa)
+    if bloco_figura is not None:
+        # mesmo naming/streaming de `extrair_linhas_nativas` (um arquivo
+        # por imagem, nunca acumula o livro em RAM); índice 0 porque o
+        # critério exige exatamente 1 bloco de imagem na página.
+        nome = f"pg{i + 1}_0.{bloco_figura['ext']}"
+        (destino_dir / nome).write_bytes(bloco_figura["image"])
+        # legenda vazia (o "\x00" final é o separador que
+        # `construir_html` usa): página-figura não tem legenda nativa
+        # adjacente para casar — o texto em volta, quando existe, é OCR
+        # do interior da própria imagem.
+        marcador = f"{_MARCADOR_IMG_PREFIXO}{nome}\x00"
+        texto = f"{marcador}\n{texto}" if texto else marcador
+        inicio_paragrafo = [True] + inicio_paragrafo
+        return texto, titulo, n_linhas_titulo, inicio_paragrafo, True
+
+    return texto, titulo, n_linhas_titulo, inicio_paragrafo, False
 
 
 def agrupar_cabecalhos(contador: Counter, total_paginas: int) -> set[str]:
@@ -1150,8 +1319,12 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
 
     with cache_path.open("w", encoding="utf-8") as cache:
         for i in range(total):
-            texto, titulo, n_linhas_titulo, inicio_paragrafo = extrair_texto_pagina(
-                doc, i, matriz_zoom, lang, cache_path.parent
+            # `nativas > 0` é o gate de documento de
+            # `classificar_pagina_figura` — forma não-numérica de
+            # propósito, ver lá. Reusa a contagem já feita acima, sem
+            # nenhuma varredura extra do PDF.
+            texto, titulo, n_linhas_titulo, inicio_paragrafo, pagina_figura = extrair_texto_pagina(
+                doc, i, matriz_zoom, lang, cache_path.parent, doc_tem_pagina_nativa=nativas > 0
             )
 
             # Página 0 com capa extraída E cujo texto é só repetição do
@@ -1167,6 +1340,12 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
             )
             if pagina_capa_suprimida:
                 texto, titulo, n_linhas_titulo, inicio_paragrafo = "", None, 0, []
+                # a supressão de capa apaga o texto E o marcador de
+                # imagem junto — a capa já é apresentada via --cover
+                # (`capa_path`), não pode ser contada como página-figura
+                # nem anunciada na telemetria: não sobrou imagem alguma
+                # no fluxo desta página.
+                pagina_figura = False
 
             registro = {
                 "texto": texto,
@@ -1176,11 +1355,33 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
             }
             if pagina_capa_suprimida:
                 registro["pagina_capa_suprimida"] = True
+            if pagina_figura:
+                registro["pagina_figura"] = True
             cache.write(json.dumps(registro) + "\n")
 
+            # Primeira linha de TEXTO da página alimenta a análise de
+            # cabeçalho repetido — marcador de imagem não é texto e fica
+            # de fora. BUG REAL que isto corrige (achado ao validar a
+            # Fase 4.21 v1, ver TRACE.md): numa página que começa com
+            # imagem, a primeira linha É o marcador, e ele entrava no
+            # contador como se fosse uma linha de texto. No FDE os
+            # marcadores de pg-14 e pg-53 (cujas legendas terminam ambas
+            # em "...the data engineering lifecycle") clusterizaram
+            # entre si e com o cabeçalho real "undercurrents", formando
+            # um grupo de exatamente 3 — o mínimo de
+            # LIMIAR_CABECALHO_MINIMO. As duas figuras eram então
+            # apagadas como "cabeçalho repetido", imagem e legenda
+            # juntas, silenciosamente.
+            #
+            # O dano não parava aí: um marcador podia COMPLETAR o grupo
+            # de um cabeçalho real e fazê-lo cruzar o mínimo, passando a
+            # remover uma linha de texto legítima ("undercurrents") de
+            # outras páginas. E a v1 agrava a exposição, porque as
+            # páginas-figura do caminho OCR também passam a começar com
+            # marcador. Filtrar aqui trata a causa nas duas pontas.
             for linha in texto.splitlines():
                 linha = linha.strip()
-                if linha:
+                if linha and not linha.startswith(_MARCADOR_IMG_PREFIXO):
                     contador[normalizar_linha(linha)] += 1
                     break
 
@@ -1233,7 +1434,9 @@ def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -
     return paragrafos
 
 
-def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str], lang: str) -> list[int]:
+def construir_html(
+    cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str], lang: str
+) -> tuple[list[int], list[int]]:
     """Passo 2/2: lê o cache de texto por página (streaming, sem OCR novo)
     e escreve o HTML final, removendo o cabeçalho de seção repetido
     (quando é a primeira linha da página), promovendo o título de
@@ -1243,10 +1446,20 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
     em `extrair_linhas_nativas()`) como `<img>`/`<figure>` na posição em
     que apareceram no texto original — não anexadas ao fim da página.
 
-    Retorna a lista de páginas (numeração física do PDF, 1-based — a
-    mesma usada em `id="pg-{i+1}"` abaixo, não um rótulo de numeração
-    impressa que o PDF possa declarar via /PageLabels) que não produziram
-    nenhum parágrafo nem título — mesma condição que antes gerava
+    Retorna (páginas sem texto, páginas-figura), ambas na numeração
+    física do PDF, 1-based — a mesma usada em `id="pg-{i+1}"` abaixo,
+    não um rótulo de numeração impressa que o PDF possa declarar via
+    /PageLabels.
+
+    A segunda lista alimenta a linha estruturada `FIGURAS:` (ver
+    `main`): é a ÚNICA observabilidade que o pipeline tem sobre
+    classificação por página. Sem ela, uma página-figura classificada
+    por engano passaria por `if paragrafos:` abaixo como sucesso, e nem
+    o log nem a tela do app registrariam nada — a classificação seria
+    invisível justamente para quem tem o PDF na mão para conferir.
+
+    A primeira lista é a de páginas que não produziram nenhum parágrafo
+    nem título — mesma condição que antes gerava
     silenciosamente `<p>&#160;</p>`, sem nenhum threshold novo. Uma
     página com só imagem (sem texto e sem título) NÃO entra nesta lista —
     tem conteúdo real, só não é texto. Uma página marcada como
@@ -1260,6 +1473,7 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
     print('PROGRESS:{"fase":"html","atual":0,"total":0}')
 
     paginas_sem_texto: list[int] = []
+    paginas_figura: list[int] = []
 
     with cache_path.open(encoding="utf-8") as cache, html_path.open("w", encoding="utf-8") as out:
         out.write(HTML_HEADER.format(titulo=html.escape(titulo), lang=lang_html_de_ocr(lang)))
@@ -1271,12 +1485,32 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
             n_linhas_titulo = registro["n_linhas_titulo"]
             inicio_paragrafo = registro["inicio_paragrafo"]
             pagina_capa_suprimida = registro.get("pagina_capa_suprimida", False)
+            if registro.get("pagina_figura", False):
+                paginas_figura.append(i + 1)
 
             # mantém texto e inicio_paragrafo em lockstep ao descartar
             # linha vazia — não confiar que já vêm alinhados 1:1 sem checar.
             pares = [(l.strip(), b) for l, b in zip(texto.splitlines(), inicio_paragrafo) if l.strip()]
             linhas = [l for l, _ in pares]
             inicio_paragrafo = [b for _, b in pares]
+
+            # Marcador de imagem no TOPO da página sai ANTES da remoção
+            # de título/cabeçalho abaixo: as duas fatiam pelo início da
+            # lista (`linhas[n_linhas_titulo:]`, `linhas[1:]`) e com o
+            # marcador na posição 0 comeriam a IMAGEM em vez da linha de
+            # texto que deveriam remover.
+            #
+            # Vale para os DOIS caminhos, não só para a página-figura do
+            # OCR (`classificar_pagina_figura`): no caminho nativo, uma
+            # página que começa com figura também põe o marcador em 0.
+            # Medido no FDE — pg-14 (Figure 1-3) e pg-53 (Figure 2-1)
+            # perdiam imagem E legenda exatamente aqui, pela remoção de
+            # cabeçalho; ver o filtro do contador em `primeira_passada`
+            # para a causa raiz e TRACE.md para o episódio.
+            prefixo_figura: list[str] = []
+            while linhas and linhas[0].startswith(_MARCADOR_IMG_PREFIXO):
+                prefixo_figura.append(linhas.pop(0))
+                inicio_paragrafo.pop(0)
 
             html_titulo = ""
             if titulo_pagina and n_linhas_titulo:
@@ -1296,7 +1530,12 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
                 inicio_paragrafo[0] = True
 
             linhas_limpas = [limpar_linha(l) for l in linhas]
-            paragrafos_texto = unir_linhas_em_paragrafos(linhas_limpas, inicio_paragrafo)
+            # a imagem da página-figura vai na frente do que sobrou do
+            # texto; reentra na MESMA lista para reusar, sem duplicar, o
+            # ramo de marcador do laço abaixo.
+            paragrafos_texto = prefixo_figura + unir_linhas_em_paragrafos(
+                linhas_limpas, inicio_paragrafo
+            )
 
             # Intercala <img>/<figure> na posição em que o marcador
             # apareceu (ver _MARCADOR_IMG_PREFIXO) em vez de tratar
@@ -1344,7 +1583,7 @@ def construir_html(cache_path: Path, html_path: Path, titulo: str, cabecalhos: s
 
         out.write(HTML_FOOTER)
 
-    return paginas_sem_texto
+    return paginas_sem_texto, paginas_figura
 
 
 # O Calibre não emite uma % contínua — só 3 marcas fixas ao longo da
@@ -1506,7 +1745,9 @@ def main() -> None:
                 # vez da mensagem genérica de qualquer outra falha.
                 print(f'FALHA:{json.dumps({"motivo": "estrutura_invalida", "detalhe": str(erro)})}')
                 sys.exit(1)
-            paginas_sem_texto = construir_html(cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos, lang=args.lang)
+            paginas_sem_texto, paginas_figura = construir_html(
+                cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos, lang=args.lang
+            )
 
             if total > 0 and len(paginas_sem_texto) == total:
                 # Nenhuma página produziu texto — não vale rodar o Calibre
@@ -1521,6 +1762,18 @@ def main() -> None:
 
             if paginas_sem_texto:
                 print(f"RESSALVA:{json.dumps({'paginas_sem_texto': paginas_sem_texto})}")
+
+            # FIGURAS: é informação factual de sucesso, não ressalva —
+            # a página foi convertida CORRETAMENTE e a imagem dela está
+            # no livro. Emitida SEMPRE que houver página-figura, nunca
+            # só quando o número parecer fora do esperado: "fora do
+            # esperado" exigiria um limiar que o corpus não sustenta, um
+            # aviso esporádico seria lido como alarme, e o falso
+            # positivo plausível (anexo escaneado tratado como figura) é
+            # justamente um número BAIXO — que um filtro de anomalia
+            # esconderia exatamente no caso em que ele importa.
+            if paginas_figura:
+                print(f"FIGURAS:{json.dumps({'paginas_figura': paginas_figura})}")
     except KeyboardInterrupt:
         # Propagada pelo handler de SIGTERM acima (ou por Ctrl+C manual, uso
         # normal em terminal) — o `with` já rodou __exit__ e removeu o
