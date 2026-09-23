@@ -499,6 +499,19 @@ function processarLinha(linha, estadoLinhas) {
     log(linha);
     return;
   }
+  // BRANCO: (ver foliant.py, main) — páginas genuinamente em branco no
+  // PDF original. Mesmo tratamento de FIGURAS: não é ressalva (não há
+  // falha nenhuma a reportar), só alimenta a linha informativa da tela
+  // de conclusão e nunca muda o estado final.
+  if (linha.startsWith("BRANCO:")) {
+    try {
+      estadoLinhas.branco = JSON.parse(linha.slice("BRANCO:".length));
+    } catch {
+      /* mal-formada: segue sem o detalhe, log bruto abaixo */
+    }
+    log(linha);
+    return;
+  }
   // ANALISE: (emitido pelo pipeline real, ver foliant.py) não tem mais
   // UI própria em "convertendo" — a contagem nativas/escaneadas já foi
   // mostrada em "antes de converter" via --inspect. Cai no log bruto
@@ -516,17 +529,19 @@ async function aoClicarCancelar() {
   if (!havia) log("Nada para cancelar (nenhuma conversão em andamento).");
 }
 
-async function finalizarConversaoComSucesso(ressalva, figuras) {
+async function finalizarConversaoComSucesso(ressalva, figuras, branco) {
   await invoke("registrar_epub_gerado", { caminho: sessao.saida });
   const paginas = ressalva?.paginas_sem_texto;
-  // `paginasFigura` viaja para os DOIS estados finais: a informação é a
-  // mesma tenha havido ressalva ou não, e não influencia a escolha entre
-  // eles (página-figura é sucesso, não ressalva).
+  // `paginasFigura` e `paginasBranco` viajam para os DOIS estados finais:
+  // a informação é a mesma tenha havido ressalva ou não, e nenhuma delas
+  // influencia a escolha entre eles (página-figura e página em branco são
+  // sucesso, não ressalva).
   const paginasFigura = figuras?.paginas_figura || [];
+  const paginasBranco = branco?.paginas_branco || [];
   if (paginas && paginas.length > 0) {
-    transicionarPara("com_ressalva", { paginasSemTexto: paginas, paginasFigura });
+    transicionarPara("com_ressalva", { paginasSemTexto: paginas, paginasFigura, paginasBranco });
   } else {
-    transicionarPara("pronto", { paginasFigura });
+    transicionarPara("pronto", { paginasFigura, paginasBranco });
   }
 }
 
@@ -567,7 +582,11 @@ async function iniciarConversao() {
         irParaAntesDeConverter({ avisoCancelamento: true });
       } else if (dados.code === 0) {
         log("Processo concluído com sucesso.");
-        await finalizarConversaoComSucesso(estadoLinhas.ressalva, estadoLinhas.figuras);
+        await finalizarConversaoComSucesso(
+          estadoLinhas.ressalva,
+          estadoLinhas.figuras,
+          estadoLinhas.branco,
+        );
       } else {
         log(`Processo finalizado com erro (código ${dados.code}).`);
         transicionarPara("falha", { motivo: estadoLinhas.falha?.motivo });
@@ -706,6 +725,7 @@ function renderizarPronto(dados = {}) {
   sucessoEl.append(criarIcone("circle-check", "icone"), conteudo);
 
   renderizarFiguras(dados.paginasFigura);
+  renderizarBranco(dados.paginasBranco);
   popularLogTemplate();
   ligarSegmentadoDispositivo();
   telaEl.querySelector("#btn-reiniciar").addEventListener("click", () => irParaSelecionar());
@@ -725,9 +745,50 @@ function renderizarPronto(dados = {}) {
 // BAIXO — que um filtro de anomalia esconderia no caso em que importa.
 // É também a única forma de o usuário, que tem o PDF na mão, conferir.
 function renderizarFiguras(paginasFigura = []) {
-  const containerEl = telaEl.querySelector("#figuras-info");
+  const n = paginasFigura.length;
+  renderizarBlocoDePaginas("#figuras-info", {
+    titulo: "Páginas que são figura",
+    texto:
+      n === 1
+        ? "1 página do PDF é uma figura que ocupa a página toda. Ela entrou no livro como imagem."
+        : `${n} páginas do PDF são figuras que ocupam a página toda. Elas entraram no livro como imagem.`,
+    paginas: paginasFigura,
+  });
+}
+
+// Linha informativa de página em branco, mesmas duas telas e mesmo tom
+// da de página-figura — e pelo mesmo motivo de fundo: é fato de
+// sucesso, não ressalva. Página em branco não tem nada a transcrever,
+// então anunciá-la em âmbar junto das falhas reais era o defeito que
+// esta fase corrige (ver TRACE.md, vigésimo segundo episódio: no
+// Gil-208, 12 das 13 páginas da RESSALVA eram páginas em branco).
+//
+// Também aparece SEMPRE, nunca só quando o número surpreender: é o
+// único lugar em que uma página classificada como em branco por engano
+// fica visível. Sem esta linha ela sumiria do EPUB (sem marcador) e da
+// tela — invisível justamente para quem tem o PDF na mão para conferir.
+function renderizarBranco(paginasBranco = []) {
+  const n = paginasBranco.length;
+  renderizarBlocoDePaginas("#branco-info", {
+    titulo: "Páginas em branco",
+    texto:
+      n === 1
+        ? "1 página do PDF está em branco no original e entrou no livro vazia."
+        : `${n} páginas do PDF estão em branco no original e entraram no livro vazias.`,
+    paginas: paginasBranco,
+  });
+}
+
+// Bloco informativo neutro com lista de páginas sob demanda,
+// compartilhado por `renderizarFiguras` e `renderizarBranco`. Tom `info`
+// do design system (azul de marca, `callout-info`) e ícone `info`: o
+// âmbar é reservado a "aviso do sistema, ressalva"
+// (design-system/project/guidelines/colors-semantic.card.html), e
+// nenhum dos dois casos é ressalva.
+function renderizarBlocoDePaginas(seletor, { titulo, texto, paginas }) {
+  const containerEl = telaEl.querySelector(seletor);
   if (!containerEl) return;
-  if (paginasFigura.length === 0) {
+  if (paginas.length === 0) {
     containerEl.hidden = true;
     return;
   }
@@ -738,21 +799,17 @@ function renderizarFiguras(paginasFigura = []) {
 
   const conteudo = document.createElement("div");
 
-  const titulo = document.createElement("strong");
-  titulo.className = "callout-titulo";
-  titulo.textContent = "Páginas que são figura";
+  const tituloEl = document.createElement("strong");
+  tituloEl.className = "callout-titulo";
+  tituloEl.textContent = titulo;
 
   const corpo = document.createElement("p");
   corpo.className = "callout-corpo";
-  const n = paginasFigura.length;
-  corpo.textContent =
-    n === 1
-      ? "1 página do PDF é uma figura que ocupa a página toda. Ela entrou no livro como imagem."
-      : `${n} páginas do PDF são figuras que ocupam a página toda. Elas entraram no livro como imagem.`;
+  corpo.textContent = texto;
 
   const lista = document.createElement("p");
   lista.className = "ajuda";
-  lista.textContent = `Páginas: ${paginasFigura.join(", ")}`;
+  lista.textContent = `Páginas: ${paginas.join(", ")}`;
   lista.hidden = true;
 
   const acoes = document.createElement("div");
@@ -766,7 +823,7 @@ function renderizarFiguras(paginasFigura = []) {
   });
   acoes.appendChild(btn);
 
-  conteudo.append(titulo, corpo, acoes, lista);
+  conteudo.append(tituloEl, corpo, acoes, lista);
   containerEl.append(criarIcone("info", "icone"), conteudo);
 }
 
@@ -794,6 +851,7 @@ function renderizarComRessalva(dados = {}) {
   });
 
   renderizarFiguras(dados.paginasFigura);
+  renderizarBranco(dados.paginasBranco);
   popularLogTemplate();
   ligarSegmentadoDispositivo();
   telaEl.querySelector("#btn-reiniciar").addEventListener("click", () => irParaSelecionar());
@@ -803,10 +861,11 @@ function renderizarComRessalva(dados = {}) {
 // Estado 6 — falha
 // ---------------------------------------------------------------------
 
-// `motivo === "sem_texto_legivel"` e `motivo === "estrutura_invalida"` vêm
-// de FALHA: (ver foliant.py, main) — mensagem específica nesses dois casos;
-// qualquer outro código de saída != 0 (sem motivo reconhecido) mantém o
-// texto genérico já validado (crash real, sidecar não encontrado, etc.).
+// `motivo === "sem_texto_legivel"`, `"documento_sem_conteudo"` e
+// `"estrutura_invalida"` vêm de FALHA: (ver foliant.py, main) — mensagem
+// específica nesses três casos; qualquer outro código de saída != 0 (sem
+// motivo reconhecido) mantém o texto genérico já validado (crash real,
+// sidecar não encontrado, etc.).
 function renderizarFalha(opts = {}) {
   const corpoEl = telaEl.querySelector("#erro .callout-corpo");
   if (corpoEl && opts.motivo === "sem_texto_legivel") {
@@ -814,6 +873,14 @@ function renderizarFalha(opts = {}) {
       "Não há texto legível neste PDF para converter — nenhuma página produziu " +
       "conteúdo reconhecível. Verifique se o arquivo não está corrompido, " +
       "protegido, ou se é só imagem sem texto.";
+  } else if (corpoEl && opts.motivo === "documento_sem_conteudo") {
+    // Distinto de `sem_texto_legivel` de propósito: ali a transcrição
+    // falhou, aqui não havia nada a transcrever. Dizer "não há texto
+    // legível" sobre um PDF cujas páginas são todas vazias manda o
+    // usuário procurar um defeito que não existe.
+    corpoEl.textContent =
+      "Este PDF não tem nenhuma página com conteúdo — todas as páginas estão " +
+      "em branco. Verifique se você selecionou o arquivo certo.";
   } else if (corpoEl && opts.motivo === "estrutura_invalida") {
     corpoEl.textContent =
       "A conversão parou porque a estrutura interna do PDF está inválida — " +

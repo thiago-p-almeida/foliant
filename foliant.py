@@ -988,6 +988,96 @@ def classificar_pagina_figura(
     return bloco
 
 
+# Guarda por pixel de `pagina_em_branco`. Duas coisas que este número
+# NÃO é, e uma que ele é:
+#
+# NÃO é limiar de "quanta tinta basta para ser branco". A condição de
+#     uso é "NENHUM pixel abaixo deste valor" — exatamente zero, não uma
+#     fração pequena. Não existe percentual a ajustar, e por isso não há
+#     grau de liberdade onde um erro de calibração possa entrar.
+# NÃO é o critério de decisão. Quem decide é o fluxo de conteúdo vazio
+#     (ver `pagina_em_branco`); isto só confirma que nada foi pintado por
+#     um caminho que `read_contents()` não revele.
+# É o PONTO DE BINARIZAÇÃO, e esse sim foi medido: é o tom a partir do
+#     qual "escuro" significa conteúdo e não textura de papel.
+#
+# A medição que fixa 128 é sobre papel, não sobre as páginas em branco.
+# Numa faixa de margem de página real do Gil — conferida visualmente
+# como textura pura, sem nenhum conteúdo — o papel escaneado mede
+# ZERO pixels abaixo de 128 e 35,5% dos pixels abaixo de 240. Ou seja:
+# binarizar em tom claro mede a textura do papel (papel limpo
+# registraria mais "tinta" que muitas páginas de texto), binarizar em
+# tom escuro mede conteúdo. 128 está do lado certo dessa divisão, com
+# a faixa inteira entre 128 e 240 disponível — não é um ponto
+# espremido entre duas populações.
+#
+# Folga nos dois lados, para o caso de alguém querer mexer. Do lado
+# positivo: as 15 páginas em branco do corpus (3 no Gil-80, 12 no
+# Gil-208) renderizam a RENDER_DPI com cinza médio EXATAMENTE 255,000 e
+# desvio padrão EXATAMENTE 0,000 — pixel mínimo 255, a 127 pontos daqui.
+# Do lado negativo: a página real mais clara das 288 páginas dos dois
+# livros (39 palavras, confiança média 95,5) tem 0,257% dos pixels
+# abaixo de 128, e o fixture de ruído ilegível tem 51,1%. Nenhum caso
+# conhecido chega perto desta guarda por nenhum dos lados.
+LIMIAR_PIXEL_ESCURO = 128
+
+
+def pagina_em_branco(pagina: "pymupdf.Page", img: "Image.Image") -> bool:
+    """Decide se a página está genuinamente EM BRANCO — ausência de
+    conteúdo — em vez de ser uma página cujo conteúdo o OCR não
+    conseguiu ler. Hoje as duas caem no mesmo gate (`if paragrafos:` em
+    `construir_html`) e viram a mesma RESSALVA de "não pôde ser
+    transcrita".
+
+    Motivação real: no Gil-208, 12 das 13 páginas da RESSALVA são
+    páginas em branco do original impresso. O app anunciava "13 de 208
+    páginas não puderam ser transcritas" e o EPUB ganhava 12 marcadores
+    pedindo ao leitor que conferisse o original onde não há nada a
+    conferir — alarme falso recorrente, que ensina o usuário a ignorar a
+    ressalva quando ela for verdadeira (ver TRACE.md, vigésimo segundo
+    episódio).
+
+    NÃO É HEURÍSTICA, e é por isso que não há limiar aqui. Um PDF cujo
+    fluxo de conteúdo tem 0 bytes e que não tem anotação nem widget
+    **não pinta nada** — é branco por definição de renderização, não por
+    inferência sobre a aparência. Não há número a escolher e, portanto,
+    não há como errar para o lado caro (esconder uma falha real de
+    transcrição sob o rótulo de "em branco").
+
+    A assimetria de custo é ainda garantida por construção no ponto de
+    uso: esta classificação só muda o desfecho de uma página que já não
+    produziu NENHUM parágrafo nem título (ver `construir_html`). Uma
+    página com texto nunca chega a depender dela.
+
+    LIMITE DE COBERTURA — vale declarar, porque é grande. O critério só
+    enxerga a página em branco que o produtor do PDF emitiu SEM NENHUM
+    OBJETO, que é a forma deste corpus (Gil-80 e Gil-208). **Página em
+    branco escaneada como imagem de papel NÃO é detectada**: nos
+    scanners em geral ela chega como imagem de página inteira, com
+    cobertura ~99%, estruturalmente idêntica a uma página de texto — o
+    fluxo de conteúdo tem o `Do` da imagem e este critério devolve
+    False. Esse caso continua caindo na RESSALVA, exatamente como hoje:
+    é falso negativo, o erro barato, sem nenhuma piora em relação ao
+    comportamento anterior. Tratá-lo exigiria um limiar de tinta, e o
+    corpus não tem NENHUMA amostra de papel escaneado em branco com que
+    calibrá-lo — as 15 páginas conhecidas renderizam o branco sintético
+    do PyMuPDF (255,000 exato), então ajustar um limiar contra elas
+    seria ajustar contra uma tautologia. Ver TRACE.md para a medição e
+    para qual amostra seria necessária.
+
+    `img` é o pixmap que o caminho OCR já renderizou — reusado, sem
+    nenhum render adicional (custo medido: ~0,019s/página, ~0,3% do
+    OCR)."""
+    if pagina.read_contents():
+        return False
+    if list(pagina.annots()) or list(pagina.widgets()):
+        return False
+    # Guarda contra o PDF que ainda não vimos: conteúdo pintado por um
+    # caminho que `read_contents()` não revele. Nas 15 páginas do corpus
+    # é tautologia (mínimo 255); o valor dela é sobre o caso futuro.
+    return img.convert("L").getextrema()[0] >= LIMIAR_PIXEL_ESCURO
+
+
 def extrair_texto_pagina(
     doc: "pymupdf.Document",
     i: int,
@@ -995,7 +1085,7 @@ def extrair_texto_pagina(
     lang: str,
     destino_dir: Path,
     doc_tem_pagina_nativa: bool = False,
-) -> tuple[str, str | None, int, list[bool], bool]:
+) -> tuple[str, str | None, int, list[bool], bool, bool]:
     """Extrai o texto de uma página e detecta o título de capítulo (se
     houver): usa a camada de texto nativa se existir, senão renderiza e
     faz OCR. Libera pixmap/imagem antes de retornar — nunca acumula mais
@@ -1013,7 +1103,8 @@ def extrair_texto_pagina(
 
     Retorna (texto, título detectado ou None, nº de linhas consumidas
     pelo título, lista de "linha é início de parágrafo" alinhada 1:1 com
-    texto.splitlines(), página classificada como página-figura).
+    texto.splitlines(), página classificada como página-figura, página
+    classificada como em branco).
 
     `doc_tem_pagina_nativa` só alimenta `classificar_pagina_figura` (ver
     lá) — é o gate de documento, e vem de `contar_nativas` no chamador.
@@ -1040,11 +1131,20 @@ def extrair_texto_pagina(
             limiar_razao_tamanho=LIMIAR_RECUO_RAZAO_TAMANHO_NATIVO,
         )
         titulo, n_linhas_titulo = detectar_titulo([(t, a) for t, a, _ in linhas_nativas])
-        return texto, titulo, n_linhas_titulo, inicio_paragrafo, False
+        # página com texto nativo tem conteúdo por definição — nunca é
+        # candidata a "em branco", e `pagina_em_branco` nem é consultada
+        # (ela precisa do pixmap, que este caminho não renderiza).
+        return texto, titulo, n_linhas_titulo, inicio_paragrafo, False, False
 
     pixmap = pagina.get_pixmap(matrix=matriz_zoom)
     img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
     dados = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
+    # Sobre o MESMO pixmap do OCR, antes de liberá-lo — ver
+    # `pagina_em_branco`. O OCR roda mesmo na página em branco: a
+    # classificação não gateia nada aqui, só decide a apresentação lá em
+    # `construir_html`, e manter o OCR preserva a invariante de nunca
+    # descartar texto com base numa classificação de página.
+    branca = pagina_em_branco(pagina, img)
     img.close()
     linhas_ocr = extrair_linhas_ocr(dados)
     texto = "\n".join(texto_linha for texto_linha, _, _ in linhas_ocr)
@@ -1072,9 +1172,9 @@ def extrair_texto_pagina(
         marcador = f"{_MARCADOR_IMG_PREFIXO}{nome}\x00"
         texto = f"{marcador}\n{texto}" if texto else marcador
         inicio_paragrafo = [True] + inicio_paragrafo
-        return texto, titulo, n_linhas_titulo, inicio_paragrafo, True
+        return texto, titulo, n_linhas_titulo, inicio_paragrafo, True, branca
 
-    return texto, titulo, n_linhas_titulo, inicio_paragrafo, False
+    return texto, titulo, n_linhas_titulo, inicio_paragrafo, False, branca
 
 
 def agrupar_cabecalhos(contador: Counter, total_paginas: int) -> set[str]:
@@ -1323,7 +1423,9 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
             # `classificar_pagina_figura` — forma não-numérica de
             # propósito, ver lá. Reusa a contagem já feita acima, sem
             # nenhuma varredura extra do PDF.
-            texto, titulo, n_linhas_titulo, inicio_paragrafo, pagina_figura = extrair_texto_pagina(
+            (
+                texto, titulo, n_linhas_titulo, inicio_paragrafo, pagina_figura, pagina_branca
+            ) = extrair_texto_pagina(
                 doc, i, matriz_zoom, lang, cache_path.parent, doc_tem_pagina_nativa=nativas > 0
             )
 
@@ -1357,6 +1459,12 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
                 registro["pagina_capa_suprimida"] = True
             if pagina_figura:
                 registro["pagina_figura"] = True
+            if pagina_branca:
+                # Não interage com `pagina_capa_suprimida`: uma página
+                # em branco não tem imagem, logo `extrair_capa` devolve
+                # None para ela e a supressão de capa nem chega a ser
+                # avaliada. Ver `pagina_em_branco`.
+                registro["pagina_branca"] = True
             cache.write(json.dumps(registro) + "\n")
 
             # Primeira linha de TEXTO da página alimenta a análise de
@@ -1436,7 +1544,7 @@ def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -
 
 def construir_html(
     cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str], lang: str
-) -> tuple[list[int], list[int]]:
+) -> tuple[list[int], list[int], list[int]]:
     """Passo 2/2: lê o cache de texto por página (streaming, sem OCR novo)
     e escreve o HTML final, removendo o cabeçalho de seção repetido
     (quando é a primeira linha da página), promovendo o título de
@@ -1446,10 +1554,10 @@ def construir_html(
     em `extrair_linhas_nativas()`) como `<img>`/`<figure>` na posição em
     que apareceram no texto original — não anexadas ao fim da página.
 
-    Retorna (páginas sem texto, páginas-figura), ambas na numeração
-    física do PDF, 1-based — a mesma usada em `id="pg-{i+1}"` abaixo,
-    não um rótulo de numeração impressa que o PDF possa declarar via
-    /PageLabels.
+    Retorna (páginas sem texto, páginas-figura, páginas em branco), as
+    três na numeração física do PDF, 1-based — a mesma usada em
+    `id="pg-{i+1}"` abaixo, não um rótulo de numeração impressa que o
+    PDF possa declarar via /PageLabels.
 
     A segunda lista alimenta a linha estruturada `FIGURAS:` (ver
     `main`): é a ÚNICA observabilidade que o pipeline tem sobre
@@ -1464,7 +1572,21 @@ def construir_html(
     página com só imagem (sem texto e sem título) NÃO entra nesta lista —
     tem conteúdo real, só não é texto. Uma página marcada como
     `pagina_capa_suprimida` no cache (ver `primeira_passada`) também NÃO
-    entra nesta lista — texto suprimido de propósito, não falha de OCR."""
+    entra nesta lista — texto suprimido de propósito, não falha de OCR.
+
+    A terceira lista é a das páginas genuinamente EM BRANCO (ver
+    `pagina_em_branco`). Elas saíam na primeira lista até a Fase 4.22, e
+    o resultado era o app anunciar "13 de 208 páginas não puderam ser
+    transcritas" num livro em que 12 dessas 13 são páginas em branco do
+    original. Agora a seção sai vazia, sem o marcador de "não pôde ser
+    transcrita", e a página é contada à parte.
+
+    A ordem das duas condições abaixo importa e é deliberada: "em
+    branco" só é avaliada DEPOIS de `if paragrafos:` e do título, ou
+    seja, só para páginas que já não produziram nada. Uma página com
+    texto nunca depende da classificação — é por construção, no ponto de
+    uso, que o erro caro (esconder falha real de transcrição) fica
+    impossível."""
     print("Passo 2/2: montando HTML a partir do cache...")
     # sem contador granular nesta fase — medido em produção (ver
     # ARCHITECTURE.md, Fase 4.6): monta o HTML de um livro de 208 páginas
@@ -1474,6 +1596,7 @@ def construir_html(
 
     paginas_sem_texto: list[int] = []
     paginas_figura: list[int] = []
+    paginas_branco: list[int] = []
 
     with cache_path.open(encoding="utf-8") as cache, html_path.open("w", encoding="utf-8") as out:
         out.write(HTML_HEADER.format(titulo=html.escape(titulo), lang=lang_html_de_ocr(lang)))
@@ -1485,6 +1608,7 @@ def construir_html(
             n_linhas_titulo = registro["n_linhas_titulo"]
             inicio_paragrafo = registro["inicio_paragrafo"]
             pagina_capa_suprimida = registro.get("pagina_capa_suprimida", False)
+            pagina_branca = registro.get("pagina_branca", False)
             if registro.get("pagina_figura", False):
                 paginas_figura.append(i + 1)
 
@@ -1572,6 +1696,18 @@ def construir_html(
                 # Texto suprimido de propósito (ver `primeira_passada`) —
                 # não é falha de OCR, não entra em `paginas_sem_texto`/RESSALVA.
                 pass
+            elif pagina_branca:
+                # Página genuinamente em branco (ver `pagina_em_branco`):
+                # a seção fica VAZIA, sem o marcador de "não pôde ser
+                # transcrita" — não há o que transcrever, e pedir ao
+                # leitor que confira o original numa página em branco é
+                # alarme falso. A `<section id="pg-N">` continua sendo
+                # emitida de propósito: é a âncora que casa com a
+                # numeração física do PDF e com a lista de páginas da UI.
+                # VERIFICADO no EPUB real: o Calibre preserva o `id`,
+                # reescrevendo a seção sem filhos como
+                # `<div id="pg-N" style="height:0pt">`.
+                paginas_branco.append(i + 1)
             elif not html_titulo:
                 paginas_sem_texto.append(i + 1)
                 marcador = (
@@ -1583,7 +1719,7 @@ def construir_html(
 
         out.write(HTML_FOOTER)
 
-    return paginas_sem_texto, paginas_figura
+    return paginas_sem_texto, paginas_figura, paginas_branco
 
 
 # O Calibre não emite uma % contínua — só 3 marcas fixas ao longo da
@@ -1745,17 +1881,25 @@ def main() -> None:
                 # vez da mensagem genérica de qualquer outra falha.
                 print(f'FALHA:{json.dumps({"motivo": "estrutura_invalida", "detalhe": str(erro)})}')
                 sys.exit(1)
-            paginas_sem_texto, paginas_figura = construir_html(
+            paginas_sem_texto, paginas_figura, paginas_branco = construir_html(
                 cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos, lang=args.lang
             )
 
-            if total > 0 and len(paginas_sem_texto) == total:
-                # Nenhuma página produziu texto — não vale rodar o Calibre
-                # para gerar um EPUB que seria só marcadores de página em
-                # branco. FALHA: segue o mesmo padrão de linha estruturada
-                # de PROGRESS:/ANALISE:/INSPECAO:, para o app desktop
-                # distinguir esta causa específica de um erro genérico.
-                print('FALHA:{"motivo": "sem_texto_legivel"}')
+            # Gate de documento sem conteúdo aproveitável. A soma das DUAS
+            # categorias é o que tem de cobrir o livro: desde a Fase 4.22
+            # a página em branco sai de `paginas_sem_texto`, e checar só
+            # essa lista deixaria um PDF 100% em branco passar direto pelo
+            # gate — o Calibre rodaria e o app anunciaria SUCESSO sobre um
+            # EPUB vazio. Os dois motivos são distintos de propósito: um
+            # diz que a transcrição falhou, o outro que não havia nada a
+            # transcrever. FALHA: segue o mesmo padrão de linha estruturada
+            # de PROGRESS:/ANALISE:/INSPECAO:, para o app desktop
+            # distinguir a causa específica de um erro genérico.
+            if total > 0 and len(paginas_sem_texto) + len(paginas_branco) == total:
+                if paginas_sem_texto:
+                    print('FALHA:{"motivo": "sem_texto_legivel"}')
+                else:
+                    print('FALHA:{"motivo": "documento_sem_conteudo"}')
                 sys.exit(1)
 
             convert_to_ebook(html_path, args.saida, titulo=titulo, autor=args.autor, capa_path=capa_path, lang=args.lang)
@@ -1774,6 +1918,17 @@ def main() -> None:
             # esconderia exatamente no caso em que ele importa.
             if paginas_figura:
                 print(f"FIGURAS:{json.dumps({'paginas_figura': paginas_figura})}")
+
+            # BRANCO: mesma lógica do FIGURAS: — informação factual de
+            # sucesso, não ressalva, e emitida SEMPRE que houver página
+            # em branco. Nunca silenciar por completo: é assim que uma
+            # classificação errada continua visível e conferível por
+            # quem tem o PDF na mão. Sem essa linha, uma página
+            # classificada como em branco por engano sairia do EPUB sem
+            # marcador E sem aparecer em lugar nenhum — o defeito ficaria
+            # invisível exatamente para quem poderia detectá-lo.
+            if paginas_branco:
+                print(f"BRANCO:{json.dumps({'paginas_branco': paginas_branco})}")
     except KeyboardInterrupt:
         # Propagada pelo handler de SIGTERM acima (ou por Ctrl+C manual, uso
         # normal em terminal) — o `with` já rodou __exit__ e removeu o

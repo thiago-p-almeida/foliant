@@ -47,6 +47,30 @@ com o marcador `"[Página N do PDF original não pôde ser transcrita pelo
 OCR — verifique o arquivo original nesta página.]"` no lugar do conteúdo
 das páginas 3 e 4. No app desktop, isso leva à tela "com_ressalva".
 
+## `falha_documento_em_branco.pdf` (4 páginas, ~1 KB)
+
+Quatro páginas com **fluxo de conteúdo vazio** (`read_contents()` de 0
+bytes), sem nenhuma anotação ou widget — a mesma estrutura das 15
+páginas em branco reais do corpus (3 no `001-080.pdf`, 12 no
+`livro_completo_208pg.pdf`), e no mesmo tamanho de página delas
+(578,16 × 824,40 pt). Ver `pagina_em_branco` em `foliant.py` e TRACE.md,
+vigésimo segundo episódio.
+
+**Por que esta fixture existe**: a Fase 4.22 tirou a página em branco de
+`paginas_sem_texto`, e isso **desarma** o gate de falha total, que
+contava só aquela lista. Sem a correção, um PDF 100% em branco passaria
+direto pelo gate, o Calibre rodaria, e o app anunciaria **sucesso** sobre
+um EPUB vazio. Nenhum documento do corpus exercita esse caminho — esta
+fixture existe exatamente para que essa regressão seja testável.
+
+**Comportamento esperado e confirmado**: as 4 páginas são classificadas
+como em branco, `paginas_sem_texto` fica vazia, e o gate passa a somar as
+duas categorias — `FALHA:{"motivo": "documento_sem_conteudo"}`, `exit
+code 1`, nenhum `.epub` gerado. O motivo é distinto de
+`sem_texto_legivel` de propósito: ali a transcrição falhou, aqui não
+havia nada a transcrever. No app desktop leva à tela "falha" com a
+mensagem "Este PDF não tem nenhuma página com conteúdo…".
+
 ## `falha_corrompido.pdf` (60.000 bytes)
 
 `samples/001-080.pdf` truncado nos primeiros 60.000 bytes
@@ -88,6 +112,17 @@ doc.save("tests/fixtures/falha_ocr_ilegivel.pdf", garbage=4, deflate=True)
 
 ```bash
 head -c 60000 samples/001-080.pdf > tests/fixtures/falha_corrompido.pdf
+```
+
+```python
+import pymupdf
+
+# Sem insert_image, sem draw, sem texto: `new_page` sozinho já produz
+# uma página de fluxo de conteúdo vazio — que é exatamente o caso real.
+doc = pymupdf.open()
+for _ in range(4):
+    doc.new_page(width=578.16, height=824.40)
+doc.save("tests/fixtures/falha_documento_em_branco.pdf")
 ```
 
 ```python
