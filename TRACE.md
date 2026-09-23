@@ -2046,3 +2046,190 @@ nativo (anexo digitalizado numa dissertação), passa nos 5 critérios. Em
 v1 isso custa uma `<figure>` redundante e nada mais, porque o texto
 permanece — é exatamente por isso que a v1 pôde ser implementada apesar
 de a condição de falseamento ser plausível.
+
+# Vigésimo segundo episódio — página em branco não é falha de OCR: um critério sem limiar, e a medição que mostrou por que o sinal "óbvio" não servia
+
+Defeito aberto nº 2 do episódio anterior: página em branco e falha real
+de transcrição caíam no mesmo gate e viravam a mesma `RESSALVA`. No
+Gil-208 o app dizia "13 de 208 páginas não puderam ser transcritas" e o
+EPUB recebia 12 marcadores pedindo ao leitor que conferisse o original
+onde não há nada a conferir. Para a persona — concurseiro, livro
+escaneado inteiro — é alarme falso recorrente, que ensina a ignorar a
+ressalva justamente quando ela for verdadeira.
+
+A assimetria de custo que organizou o ciclo: falso negativo (página em
+branco segue na RESSALVA) é o status quo, não perde nada; falso
+positivo (página com texto real dita "em branco") **esconde uma falha
+real de transcrição** e é pior que o status quo.
+
+## O sinal óbvio era o errado, e a medição mostrou por quê
+
+A hipótese natural era medir tinta: o caminho OCR já renderiza a página
+a 200 DPI, binarizar e contar pixel escuro custa **0,019 s/página**
+(~0,3% do OCR, nenhum render adicional). Barato, e generaliza para
+qualquer scanner. Medido nas 288 páginas dos dois livros do Gil:
+
+| Grupo | n | `frac_lt_128` min | mediana | max |
+|---|---|---|---|---|
+| Em branco | 15 | **0,000000** | 0,000000 | **0,000000** |
+| Demais (Gil-80) | 77 | 0,002570 | 0,028971 | 0,830124 |
+| Demais (Gil-208) | 196 | 0,002570 | 0,029077 | 0,830124 |
+
+Parece separação perfeita. **Não é utilizável, e o motivo é o mesmo em
+que o décimo sexto episódio insiste**: as 15 páginas em branco valem
+exatamente 0,000000, com desvio padrão exatamente 0,000, porque **não
+têm scan nenhum** — renderizá-las mede o fundo branco padrão do
+PyMuPDF, não papel. Calibrar um limiar contra elas é ajustar contra uma
+tautologia. O corpus tem **zero** amostras de papel escaneado em
+branco, que é a forma comum do caso.
+
+Do outro lado, o lado negativo é bem povoado e já aperta: o fixture
+`ressalva_parcial.pdf` idx 0 tem texto real e perfeitamente
+transcrevível com `frac_lt_128 = 0,000556` — 0,056% de tinta. O piso do
+lado negativo caiu uma ordem de grandeza com o primeiro documento fora
+do Gil que foi olhado.
+
+**Achado lateral, sobre binarização**: uma faixa de papel limpo
+(inspecionada visualmente, textura pura, sem conteúdo) mede
+`frac_lt_128 = 0,000000` e `frac_lt_240 = 0,354835`. Binarizando em 240,
+papel em branco registra **35% de "tinta"** — mais do que muitas páginas
+de texto. Qualquer trabalho futuro nessa direção tem de binarizar em tom
+escuro; "quase branco" mede a textura do papel, não o conteúdo.
+
+## O critério que foi implementado não tem limiar nenhum
+
+As 15 páginas em branco do corpus têm `page.read_contents()` de **0
+bytes**, com `annots()`, `widgets()`, `get_links()` e `get_xobjects()`
+todos vazios. Isso não é heurística: um PDF cujo fluxo de conteúdo é
+vazio e que não tem anotação **não pinta nada** — é branco por
+definição de renderização, não por inferência sobre a aparência. Não há
+número a escolher e, portanto, não há como errar para o lado caro.
+
+A guarda por pixel entrou, mas como confirmação e não como detector:
+"nenhum pixel abaixo de 128", que também não tem grau de liberdade —
+não é uma fração a ajustar. Nas 15 páginas conhecidas é tautologia
+(mínimo 255, a 127 pontos da guarda); o valor dela é contra o PDF que
+ainda não vimos, em que algo seja pintado por um caminho que
+`read_contents()` não revele.
+
+E a segurança é garantida uma terceira vez, no ponto de uso: a
+classificação só muda o desfecho de uma página que **já não produziu
+nenhum parágrafo nem título**. Uma página com texto nunca depende dela.
+
+**Teste negativo total** (lição do décimo sexto episódio: varrer o
+corpus inteiro, nunca amostrar): 1.408 páginas — 4 documentos + 2
+fixtures. Exatamente 15 páginas de fluxo vazio, todas no Gil; zero no
+FDE, zero no PEREIRA, zero nos fixtures. E zero divergência, página a
+página, entre o critério estrutural (0 imagem, 0 texto, 0
+`get_drawings()`) e o de fluxo vazio.
+
+## A 13ª página da RESSALVA era a capa — e é o único caso real de falha
+
+Investigando a lista do Gil-208 apareceu o que o episódio anterior
+registrou de forma incompleta. As 13 são 12 páginas em branco **mais a
+página 1**, e o mesmo no Gil-80 (`[1, 8, 10, 36]`). A página 1 não é em
+branco: é a capa, um bloco de imagem cobrindo 100% da página, com
+título e autor perfeitamente legíveis a olho nu ("Antonio Carlos Gil /
+COMO ELABORAR PROJETOS DE PESQUISA", texto branco e amarelo sobre fundo
+roxo). É a página com **mais tinta do livro inteiro** —
+`frac_lt_128 = 0,830` — e o Tesseract devolve **0 palavras** nela,
+provavelmente por não binarizar bem texto claro sobre fundo escuro sem
+inversão.
+
+Ou seja: é falha real de transcrição, e é a única das duas listas. Um
+detector de página em branco continua — corretamente — deixando-a na
+RESSALVA, porque ela é o extremo oposto de "sem tinta".
+
+## O gate de falha total quase virou o pior desfecho possível
+
+Tirar a página em branco de `paginas_sem_texto` **desarma** o gate
+`len(paginas_sem_texto) == total`, que existe para não rodar o Calibre
+num livro que seria só marcadores. Num PDF 100% em branco a lista
+ficaria vazia, o gate não dispararia, e o app entregaria um EPUB vazio
+**anunciado como sucesso** — pior que o defeito que a fase corrige, e
+invisível, porque não haveria nenhuma página "sem texto" para contar.
+
+O gate passou a somar as duas categorias, e o motivo novo
+(`documento_sem_conteudo`) é distinto de `sem_texto_legivel` de
+propósito: ali a transcrição falhou, aqui não havia nada a transcrever.
+Nenhum documento do corpus exercita esse caminho — daí a fixture nova
+`tests/fixtures/falha_documento_em_branco.pdf`, que existe exatamente
+para tornar essa regressão testável.
+
+## Validação
+
+Comparação contra o código do HEAD (`fb5254d`), seção a seção pelo
+`id="pg-N"`, em todos os documentos:
+
+| Documento | seções | `<p>`/`<h2>`/`<img>` diferentes | RESSALVA antes → depois |
+|---|---|---|---|
+| FDE (210 pg) | 210 | 0 | — (nenhuma) |
+| PEREIRA (903 pg) | 903 | 0 | — (nenhuma) |
+| Gil-80 | 80 | **3** — só os 3 marcadores removidos | `[1, 8, 10, 36]` → `[1]` |
+| Gil-208 | 208 | **12** — só os 12 marcadores removidos | 13 páginas → `[1]` |
+
+No Gil-208, onde `LIMIAR_CABECALHO_MINIMO` foi calibrado, a checagem
+mais direta não é a contagem de `<p>`: é que a análise de cabeçalho
+produziu os **mesmos 24 clusters** antes e depois, e o livro manteve os
+mesmos 26 `<h2>`. Nenhuma diferença fora dos 12 marcadores.
+| 3 fixtures existentes | — | inalterados | inalterados |
+
+O fixture de ruído (`falha_ocr_ilegivel.pdf`, `frac_lt_128 = 0,511`)
+continua em `FALHA:sem_texto_legivel` — nunca foi candidato a branco. O
+`ressalva_parcial.pdf`, cujas páginas de texto real medem 0,000556 de
+tinta, manteve `RESSALVA: [3, 4]` sem nenhuma reclassificação: é o teste
+negativo que importa, porque é o caso mais próximo da fronteira que o
+corpus oferece.
+
+`BRANCO:{"paginas_branco": [8, 10, 36]}` no Gil-80 e
+`BRANCO:{"paginas_branco": [8, 10, 36, 86, 105, 165, 171, 177, 183, 193, 199, 206]}`
+no Gil-208 — as mesmas 12 páginas que o vigésimo episódio confirmou
+visualmente.
+
+**Verificado no EPUB real, não suposto**: o Calibre preserva o `id` de
+uma `<section>` sem filhos, reescrevendo-a como
+`<div id="pg-N" style="height:0pt"></div>`. As 80 âncoras `pg-N` do
+Gil-80 e as **208** do Gil-208 continuam todas presentes; a
+correspondência com a numeração física do PDF fica intacta. Isso foi medido com um probe dedicado ANTES de
+escolher o formato, e reconfirmado no EPUB de produção.
+
+Protocolo de build completo antes da validação manual: sidecar
+(21:34) → `build:web` → `tauri build` (`.app` às 21:44) →
+reinstalação (21:47), todos posteriores à última edição de fonte
+(21:15). O sidecar **do `.app` instalado** emite
+`FALHA:{"motivo": "documento_sem_conteudo"}` na fixture nova —
+confirmação direta de que o binário de produção é o código novo.
+
+## Limite de cobertura, declarado
+
+O critério só enxerga a página em branco que o produtor do PDF emitiu
+**sem nenhum objeto**, que é a forma deste corpus. **Página em branco
+escaneada como imagem de papel não é detectada**: chega como imagem de
+página inteira, cobertura ~99%, estruturalmente idêntica a uma página
+de texto. Continua caindo na RESSALVA, exatamente como antes — falso
+negativo, o erro barato, sem nenhuma piora.
+
+Fechar essa lacuna exige amostra que o projeto não tem: **páginas em
+branco digitalizadas no scanner que a persona de fato usa** e,
+crucialmente, algumas **em branco no verso de página impressa**, onde o
+bleed-through aparece sem nenhum conteúdo próprio que o justifique.
+Amostra sintética não serve como validação — ruído gaussiano num PNG
+branco testa o gerador de ruído, não o critério.
+
+## Defeito aberto novo (terceiro)
+
+**A capa entra na RESSALVA e ganha marcador no EPUB.** Ela já é
+entregue ao leitor por `--cover` (`extrair_capa`, Fase 4.5), e ainda
+assim é contada como página de corpo não transcrita. O caminho de
+supressão existe (`pagina0_e_duplicata_de_metadados` →
+`pagina_capa_suprimida`) mas só dispara quando o OCR da página 0
+devolve texto que casa com os metadados — e aqui o OCR devolve string
+vazia, então não casa. Acontece nos dois livros do Gil. Não tratado
+nesta fase, por decisão de escopo.
+
+## Nota de voz, registrada e não tratada
+
+O texto da ressalva (`main.js`) e o marcador do EPUB (`foliant.py`)
+usam a palavra "OCR", que `design-system/project/guidelines/voice.card.html`
+lista explicitamente na coluna **Não faça**. Fora do escopo desta fase
+por decisão explícita.

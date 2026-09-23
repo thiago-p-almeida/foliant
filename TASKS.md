@@ -3284,3 +3284,49 @@ PEREIRA pg. 41) sem reabrir os 2 casos de `*` decorativo genuíno já
 cobertos (logo GEN, `samples/001-080.pdf` pg. 4; marcador de margem
 `"* "` nas pgs. 23-77 do mesmo livro). Os 3 fixtures de regressão
 (`tests/fixtures/`) mantiveram o comportamento esperado.
+
+## Fase 4.22: página em branco deixa de ser reportada como falha de OCR (2026-09-22)
+
+**Pedido**: distinguir "página em branco" de "página com conteúdo que o
+OCR não leu", que hoje caem no mesmo critério (nenhum parágrafo) e viram
+a mesma RESSALVA.
+
+**Investigação primeiro, implementação depois** (dois pedidos
+separados). A investigação mediu o sinal por pixel nas 288 páginas dos
+dois livros do Gil e concluiu que ele **não pode ser calibrado com o
+corpus atual** — as 15 páginas em branco conhecidas renderizam o branco
+sintético do PyMuPDF (255,000 exato), não papel. O critério
+implementado é outro, e não tem limiar: fluxo de conteúdo de 0 bytes,
+sem anotação nem widget.
+
+**Mudanças**:
+- `pagina_em_branco()` + `LIMIAR_PIXEL_ESCURO` em `foliant.py`; flag
+  `pagina_branca` no cache, no padrão de `pagina_figura`.
+- `construir_html` devolve uma terceira lista; a seção da página em
+  branco sai vazia, sem o marcador de "não pôde ser transcrita".
+- Gate de falha total passa a somar as duas categorias; motivo novo
+  `documento_sem_conteudo`.
+- Linha estruturada `BRANCO:` + bloco neutro (`callout-info`) nas duas
+  telas de conclusão do app; mensagem de falha nova no `main.js`.
+- Fixture nova `tests/fixtures/falha_documento_em_branco.pdf` +
+  documentação no README dos fixtures.
+
+**Critério de validação e resultado**:
+1. Gil-80 `RESSALVA [1,8,10,36]` → `[1]`; Gil-208 de 13 páginas para
+   `[1]`. A capa continua na RESSALVA nos dois. ✔
+2. `<p>` de todas as demais páginas idêntico ao HEAD nos dois Gil —
+   as únicas diferenças são os marcadores removidos. ✔
+3. FDE (210 seções) e PEREIRA (903 seções) com **0** diferenças; os 3
+   fixtures existentes inalterados. ✔
+4. Fixture 100% em branco cai em
+   `FALHA:{"motivo": "documento_sem_conteudo"}`, sem gerar EPUB. ✔
+5. `id="pg-N"` das páginas em branco presentes no EPUB final — o
+   Calibre as reescreve como `<div id="pg-N" style="height:0pt">`. ✔
+6. Protocolo de build completo, timestamps conferidos como posteriores
+   às fontes; sidecar do `.app` instalado emite o motivo novo. ✔
+
+**Fora deste ciclo, como decidido**: qualquer limiar de tinta, o texto
+atual do marcador/ressalva (a palavra "OCR"), e o tratamento da capa.
+
+**Defeito aberto novo**: a capa entra na RESSALVA e ganha marcador no
+EPUB quando o OCR não a lê (os dois livros do Gil).

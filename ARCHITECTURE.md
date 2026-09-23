@@ -3582,3 +3582,92 @@ ajustada.
    (`if paragrafos:`) distingue "nenhum texto" de "algum texto" e não
    tem como separar página em branco de falha real de OCR. Categoria
    própria, ainda sem tratamento.
+
+## Fase 4.22 — detecção de página em branco (critério sem limiar)
+
+### Critério
+
+Uma página é classificada como em branco quando as três condições
+valem. Nenhuma delas introduz um número calibrado:
+
+| # | Condição | Por que não é limiar |
+|---|---|---|
+| 1 | `page.read_contents()` com 0 bytes | fluxo de conteúdo vazio não pinta nada: é branco por definição de renderização |
+| 2 | `annots()` e `widgets()` vazios | anotação é o único jeito de pintar por fora do fluxo |
+| 3 | nenhum pixel abaixo de 128 no pixmap que o OCR já renderizou | a condição é "nenhum", não "poucos" — não há fração a ajustar |
+
+A condição 3 é guarda, não detector: nas 15 páginas do corpus é
+tautologia (mínimo 255, a 127 pontos da guarda). Existe contra o PDF
+que ainda não vimos.
+
+### Propriedade de segurança
+
+O erro caro — esconder uma falha real de transcrição sob o rótulo de
+"em branco" — é impossível **por construção, no ponto de uso**: a
+classificação só altera o desfecho de uma página que já não produziu
+nenhum parágrafo nem título (`construir_html`). Uma página com texto
+nunca depende dela.
+
+### Limite de cobertura
+
+Só detecta a página em branco emitida **sem nenhum objeto**, que é a
+forma deste corpus (15 páginas: 3 no Gil-80, 12 no Gil-208). **Página
+em branco escaneada como imagem de papel não é detectada** — chega como
+imagem de página inteira, cobertura ~99%, indistinguível de uma página
+de texto pela estrutura. Continua na RESSALVA, como antes: falso
+negativo, o erro barato.
+
+### Por que o sinal por pixel não virou o critério
+
+Medido nas 288 páginas dos dois livros do Gil, custa 0,019 s/página
+(~0,3% do OCR, reusando o pixmap). O problema não é custo: é que a
+**classe positiva do corpus é degenerada**. As 15 páginas em branco
+valem exatamente `frac_lt_128 = 0,000000`, com desvio padrão exatamente
+0, porque não têm scan — medi-las mede o fundo branco do PyMuPDF.
+Calibrar contra elas é ajustar contra uma tautologia. Enquanto isso o
+lado negativo já tem um caso em 0,000556 (texto real transcrevível) e o
+piso caiu uma ordem de grandeza com o primeiro documento fora do Gil.
+
+Binarização, se o assunto voltar: tem de ser em tom escuro. Uma faixa
+de papel limpo mede 0,000000 em 128 e **0,354835** em 240 — "quase
+branco" mede textura de papel, não conteúdo.
+
+### Amostra necessária para o caso geral
+
+Páginas em branco digitalizadas **no scanner que a persona de fato
+usa**, incluindo páginas em branco no **verso de página impressa**
+(bleed-through sem conteúdo próprio). Sem isso, qualquer limiar de
+tinta é fitado contra o branco sintético do PyMuPDF. Amostra sintética
+serve só como teste de sanidade, declarado como tal — nunca como
+validação.
+
+### Gate de documento sem conteúdo
+
+`len(paginas_sem_texto) + len(paginas_branco) == total`. Somar as duas
+categorias é obrigatório: contar só a primeira deixaria um PDF 100% em
+branco passar pelo gate e virar um EPUB vazio anunciado como sucesso. O
+motivo `documento_sem_conteudo` é distinto de `sem_texto_legivel` — ali
+a transcrição falhou, aqui não havia nada a transcrever. Coberto pela
+fixture `tests/fixtures/falha_documento_em_branco.pdf`.
+
+### Formato no EPUB
+
+A `<section class="pagina" id="pg-N">` continua sendo emitida, vazia. O
+Calibre preserva o `id`, reescrevendo-a como
+`<div id="pg-N" style="height:0pt"></div>` — **verificado com probe
+dedicado antes de escolher o formato, e reconfirmado no EPUB de
+produção**, não suposto. A correspondência entre `pg-N` e a numeração
+física do PDF, usada pela lista de páginas da UI, fica intacta.
+
+### Defeitos abertos (atualizado)
+
+1. Imagem extraída com fundo preto (SMask não aplicado) — 5 de 41 no
+   FDE. Fase 4.14.
+2. ~~Página em branco reportada como falha de OCR~~ — **resolvido nesta
+   fase** para a forma sem objetos; permanece aberto para a forma
+   escaneada como imagem de papel (ver "Limite de cobertura").
+3. **A capa entra na RESSALVA e ganha marcador no EPUB** quando o OCR
+   não a lê. `pagina_capa_suprimida` só dispara quando o OCR da página 0
+   devolve texto que casa com os metadados; com OCR vazio, não casa.
+   Acontece nos dois livros do Gil — e é a única falha real de
+   transcrição das duas listas de RESSALVA.
