@@ -1001,15 +1001,27 @@ def classificar_pagina_figura(
 # É o PONTO DE BINARIZAÇÃO, e esse sim foi medido: é o tom a partir do
 #     qual "escuro" significa conteúdo e não textura de papel.
 #
-# A medição que fixa 128 é sobre papel, não sobre as páginas em branco.
-# Numa faixa de margem de página real do Gil — conferida visualmente
-# como textura pura, sem nenhum conteúdo — o papel escaneado mede
-# ZERO pixels abaixo de 128 e 35,5% dos pixels abaixo de 240. Ou seja:
-# binarizar em tom claro mede a textura do papel (papel limpo
-# registraria mais "tinta" que muitas páginas de texto), binarizar em
-# tom escuro mede conteúdo. 128 está do lado certo dessa divisão, com
-# a faixa inteira entre 128 e 240 disponível — não é um ponto
-# espremido entre duas populações.
+# A medição que fixa 128 é sobre PAPEL, não sobre as páginas em branco.
+# Faixas de margem de páginas reais do Gil, conferidas visualmente como
+# textura pura (sem nenhum conteúdo), varridas por limiar — fração de
+# pixels abaixo do limiar, em 5 faixas:
+#
+#   limiar |   mediana  |     max        limiar |  mediana  |    max
+#      128 | 0,000000   | 0,000000          210 | 0,000000  | 0,000082
+#      150 | 0,000000   | 0,000025          220 | 0,000000  | 0,000148
+#      180 | 0,000000   | 0,000049          230 | 0,000140  | 0,053940
+#      200 | 0,000000   | 0,000074          240 | 0,003420  | 0,354835
+#
+# O papel só começa a aparecer ENTRE 220 e 240: até 220 a mediana é zero
+# e o máximo fica na 4ª casa decimal; em 230 o máximo já é 5,4%; em 240,
+# 35,5% — mais "tinta" do que muitas páginas de texto registram. Ou
+# seja, binarizar perto do branco mede a textura do papel, e binarizar
+# em tom escuro mede conteúdo.
+#
+# 128 não está espremido contra essa fronteira: há ~92 pontos de folga
+# até onde o papel começa a aparecer (220). Não é o único valor que
+# funcionaria — qualquer ponto até 220 daria zero neste papel — e é essa
+# largura, não o valor exato, que sustenta a escolha.
 #
 # Folga nos dois lados, para o caso de alguém querer mexer. Do lado
 # positivo: as 15 páginas em branco do corpus (3 no Gil-80, 12 no
