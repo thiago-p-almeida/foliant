@@ -3747,3 +3747,206 @@ encurtado para "(leitura automática de texto)".
    negativo, o erro barato). Sem amostra.
 3. ~~A capa entra na RESSALVA e ganha marcador no EPUB~~ — **resolvido
    na Fase 4.23**, com o risco aceito descrito acima.
+
+## Fase 4.24 — Etapa 0 da extração visual: premissas corrigidas e corpus do caso-alvo
+
+Rodada de pesquisa e montagem de corpus. **Nenhum código de produção
+alterado, nenhuma dependência instalada.** Relato completo no vigésimo
+quarto episódio do `TRACE.md`; dossiê de mercado em
+`PESQUISA_EXTRACAO_VISUAL_2026.md`; corpus e critério em
+`corpus_visual/README.md`.
+
+### Correção de duas premissas falsas
+
+Ambas circulavam como pressuposto de trabalho e **nenhuma estava escrita
+em `TRACE.md`, `ARCHITECTURE.md` ou `TASKS.md`** — verificado com duas
+varreduras por `publaynet`, `cc-by-nc`, `onnx`, `layoutparser`,
+`detectron`, `50-60`, `peso do modelo`, `pré-treinado` e variantes; o
+único acerto foi `TRACE.md:1537`, que diz corretamente que `onnxruntime`
+não está instalado. Por isso a correção é registrada **aqui**, como
+estado, e não como bloco de errata espalhado.
+
+| premissa | o que se afirmava | o que a fonte primária diz |
+|---|---|---|
+| licença | PubLayNet é CC-BY-NC; modelos de layout bloqueados | **CDLA-Permissive-1.0** nas anotações (PubLayNet *e* DocLayNet); imagens sob PMC Open Access, subconjunto de uso comercial. **§3.4**: sem restrição sobre *Results* de análise computacional — um peso treinado é um *Result* |
+| peso | modelos de layout pesam +50-60 MB | **PP-DocLayout-S = 4,8 MB**, Apache-2.0, as mesmas 23 categorias do modelo de 124 MB (inclui `image`, `figure`, `chart`, `table`) |
+
+Erro provável da premissa de licença: o *model zoo* do LayoutParser
+mistura datasets, e o **HJDataset** é CC-BY-NC-SA-4.0 — a licença de um
+item foi generalizada para o zoo inteiro.
+
+### A restrição real é runtime e wheel binário, não modelo
+
+| item | wheel macOS x86_64 | situação |
+|---|---|---|
+| `onnxruntime` | **1.23.2**, 19,2 MB, `macosx_13_0` | **congelado** — a corrente (1.30.0) só publica arm64 para macOS. Funciona aqui (exige ≥13,0; temos 13.7.8) |
+| `numpy` | 17,0 MB | ok |
+| modelo PP-DocLayout-S | 4,8 MB | ok |
+| `opencv-python-headless` | 4.13+ exige **macOS 14** | **fora da plataforma** — MacBook 2016 não vai para o Sonoma; último instalável 4.12.0.88 |
+
+OpenCV fora derruba o `img2table` e a família clássica dependente dele,
+por indisponibilidade de wheel — não por preferência. A norma
+anti-`numpy` (`scripts/calibrar_ocr.py:60-73`) ganhou reforço externo.
+
+**Estimativa de tamanho do sidecar**: 37 MB hoje + 67 MB (Tesseract
+embutido, Task A) + ~41 MB (detecção) ≈ **145 MB**. Este é o custo real
+de adotar detecção por modelo, e é ele que vai à decisão de produto.
+
+### Quarto detector clássico testado e reprovado: Leptonica
+
+`pixGetRegionsBinary` do Leptonica 1.87.0 — já na máquina como dependência
+do Tesseract, chamável por `ctypes`, **zero dependência nova**. Medido nas
+5 páginas do 18º episódio: máscara de halftone em **0,00 %** na FDE p.112
+e **0,90 %** na Gil pg.178, sem nenhum blob ≥1 %. Precisão perfeita,
+**recall ≈ 0** — quarta ocorrência do padrão (`find_tables`, gap
+geométrico, `ocr_photo`, Leptonica). Causa: máscara de halftone detecta
+foto reticulada, não line-art, e os dois casos-alvo são line-art.
+
+O sinal secundário (`textblock_mask`) separava a 200 DPI e **inverteu o
+ordenamento a 300 DPI**. Não vale limiar.
+
+### Corpus do caso-alvo: de N=0 para N=13
+
+O caso-alvo — figura/tabela embutida em página escaneada **com texto
+corrido em volta** — estava em N=0 desde a Fase 4.20.
+
+| | |
+|---|---|
+| páginas positivas | **13**, de **5** fontes/acervos distintos, teto de 3 por fonte |
+| objetos anotados | **16** (foto 5, tabela 5, line-art 3, gráfico 3) |
+| corpus negativo | **224** páginas de **4** produtores de scan |
+| propriedade verificada | `get_text("text")` = **0 caracteres** em todas — caem no ramo OCR |
+
+Os PDFs foram montados das **imagens** de página do Internet Archive, não
+do PDF que o IA distribui: aquele tem camada de OCR embutida e cairia no
+ramo nativo de `extrair_texto_pagina` ([foliant.py:886](foliant.py#L886)).
+
+Negativos: Gil-208 inteiro **menos** idx 0 (capa) e idx **178** (Gantt,
+verificado por render de 176/177/178, não herdado) = 206; mais 18 páginas
+só-texto de 3 scanners novos. **Gil-80 não entra** — são as 80 primeiras
+do Gil-208, amostra dependente.
+
+**Buraco declarado**: os 3 gráficos estão todos na **mesma página**, mesma
+fonte e mesmo desenhista. Cumpre a letra do alvo, não o espírito. O recall
+de `gráfico` fica **inconclusivo por construção**. Causa estrutural:
+gráfico com eixo rotulado é raro em livro anterior a 1930, a faixa onde o
+domínio público é seguro.
+
+**Viés declarado**: a triagem de candidatas usou blocos `Picture`/`Table`
+do ABBYY, o que tende a **superestimar** recall de detectores que errem
+pelos mesmos motivos. Mitigado com triagem paralela por legenda escrita
+(neutra quanto a motor) e confirmação visual de cada página — quatro
+candidatas do `ocr_photo` foram rejeitadas por serem manchas de foxing.
+
+### Domínio do corpus público, e o corpus da persona
+
+As 13 páginas positivas do `corpus_visual/` vêm de **livros anteriores a
+1930** — gravura, meio-tom grosseiro, *foxing*, tipografia antiga,
+digitalização de acervo. Um resultado ali mede o modelo **nesse domínio**
+e **não** responde pelo caso da persona: apostila moderna escaneada em
+copiadora ou fotografada com celular, com sombra de curvatura,
+perspectiva e impressão offset recente.
+
+Esse caso passou a ser coberto pelo **`corpus_local/`** — 27
+digitalizações fornecidas pelo usuário. **Material próprio, sem licença
+de redistribuição: o diretório está no `.gitignore` da raiz e nenhum
+arquivo dele é versionado.** Só contagens e critério ficam registrados.
+
+| grupo | n |
+|---|---|
+| positivas (caso-alvo) | **13 páginas, 15 objetos** |
+| página em branco com sombra | **7 páginas** |
+| fora do caso-alvo | 7 (3 tabelas de página inteira, 3 montagens sem prosa, 1 só-texto reaproveitada como negativa) |
+
+**Rotação, registrada como dado à parte**: 12 das 20 páginas legíveis
+precisaram de correção antes da anotação (3× 180°, 3× 90°, 6× 270°),
+proposta pelo OSD do Tesseract e **conferida visualmente uma a uma** — a
+confiança do OSD ficou entre 0,55 e 33,5 e ele errou pelo menos uma vez.
+Isso entra sinalizado no Portão 1: recall sobre página **pré-rotacionada
+por mim** não é o recall numa apostila crua, porque o pipeline de
+produção não tem correção de orientação hoje.
+
+**As 7 páginas em branco com sombra fecham a lacuna da Fase 4.22**
+("página em branco escaneada como imagem de papel — sem amostra"). Todas
+as 7 fizeram o OSD falhar por ausência de caractere: sinal independente,
+de outro motor. São material para aquela tarefa, não para este Portão.
+
+**O buraco do tipo 2 está fechado.** Os 3 gráficos do corpus público
+estavam todos na mesma página; o `corpus_local` acrescenta 4 gráficos em
+3 páginas de 2 livros. O tipo passa a ter 7 objetos em 4 páginas de 3
+livros e **deixa de ser inconclusivo por construção**.
+
+| tipo visual | público (≤1930) | local (moderno) | total |
+|---|---|---|---|
+| foto / meio-tom | 5 | 6 | **11** |
+| tabela | 5 | 4 | **9** |
+| line-art | 3 | 1 | **4** |
+| gráfico com rótulo | 3 | 4 | **7** |
+| **total** | **16** | **15** | **31** (26 páginas) |
+
+Corpus negativo somado: **225** páginas, 5 produtores de scan.
+
+### Critério do Portão 1, fixado antes de medir
+
+Registrado em `corpus_visual/README.md` **antes** de qualquer execução:
+acerto = IoU ≥ 0,50 com tipo batendo; aceitar se recall ≥ ~80 % **e**
+falso positivo ~0 nas 224 negativas; **intervalo de Wilson a 95 %
+obrigatório** ao lado de todo recall (com N=16, 13/16 = 81,3 % dá IC95%
+≈ [57 %, 93 %] — intervalo que cruza 80 % é **inconclusivo**, não
+aprovado); recall estratificado por tipo visual; reprovando, **arquivar
+sem forçar** (padrão da Fase 4.5 e 4.18), sem trocar de modelo em busca
+de número melhor.
+
+Acrescentado nesta rodada: o recall vai reportado **separado por domínio**
+(público ≤1930 vs `corpus_local` moderno), nunca somado num número só — os
+dois corpora medem coisas diferentes, e é justamente a diferença entre eles
+que responde se o modelo serve à persona.
+
+
+### Defeito aberto novo: o pipeline não corrige orientação de página
+
+Achado na montagem do `corpus_local`, **não investigado nesta rodada** —
+registrado com a evidência para não se perder.
+
+`extrair_texto_pagina` renderiza a página e manda para o OCR **na
+orientação em que ela veio**. Não há nenhuma etapa de detecção ou
+correção de rotação em todo o pipeline.
+
+Evidência, de material real fotografado com celular:
+
+- **12 das 20 páginas úteis estavam rotacionadas** — 3× 180°, 3× 90°,
+  6× 270°. Não é caso de borda: é a **maioria** do material.
+- O **OSD do Tesseract** (`tesseract … --psm 0`) existe e daria a
+  correção, mas a confiança medida ficou entre **0,55 e 33,5** — e ele
+  **errou** pelo menos um caso (`463802`, confiança 1,42, página
+  reportada como `rotate=0` estando de lado). **Não serve para correção
+  automática sem conferência humana**, que é exatamente o que um
+  conversor batch não tem.
+- Sinal colateral útil: as 7 páginas em branco **fizeram o OSD falhar**
+  por ausência de caractere. Falha do OSD é indício de página sem texto,
+  não de página torta — os dois casos não devem ser confundidos por
+  quem for mexer nisto.
+
+**Impacto provável, não medido**: uma página rotacionada vai para o
+Tesseract de lado e volta como texto sem sentido. Pelo gate atual
+(`if paragrafos:`), isso **não** cai na RESSALVA — produz parágrafos,
+só que de lixo. É o mesmo mecanismo do 19º episódio (página-figura
+lida como OCR): o critério distingue "nenhum texto" de "algum texto", e
+continua sem distinguir **texto de lixo**.
+
+**Por que não foi tratado agora**: fora do escopo da Etapa 0, e a
+correção não é óbvia — o OSD medido não é confiável o bastante para
+rodar sozinho, então a solução exigiria ou outro sinal, ou uma decisão
+de produto sobre pedir confirmação ao usuário.
+
+### Defeitos abertos (atualizado após a Fase 4.24)
+
+1. Imagem extraída com fundo preto (SMask não aplicado) — 5 de 41 no
+   FDE. Fase 4.14.
+2. Página em branco **escaneada como imagem de papel** — não detectada
+   pelo critério estrutural da 4.22; continua na RESSALVA. **Deixou de
+   estar sem amostra**: o `corpus_local` tem agora **7 páginas** desse
+   exato caso, com sombra de curvatura e textura de papel.
+3. **Orientação de página não é corrigida** — novo nesta fase, descrito
+   acima. 12 de 20 páginas de material real de celular rotacionadas; OSD
+   do Tesseract não confiável o bastante para automatizar.

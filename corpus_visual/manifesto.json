@@ -1,0 +1,329 @@
+[
+ {
+  "arquivo": "tecnica_industrial_1915_n1.pdf",
+  "identifier": "tecnica-industrial",
+  "subarquivo": "TecnicaIndustrial_1915_A1_N1",
+  "titulo": "Técnica Industrial, ano 1 n.1 (1915)",
+  "idioma": "pt-BR",
+  "url_origem": "https://archive.org/details/tecnica-industrial",
+  "licenca": "CC0 1.0 Universal (licenseurl declarado no item)",
+  "licenca_confirmada": true,
+  "versionavel": true,
+  "paginas": [
+   {
+    "pagina_ia": 6,
+    "tipo_visual": "tabela",
+    "nota": "tabela numerica com fios no alto da coluna esquerda + texto corrido abaixo; ha tambem foto meio-tom na coluna direita"
+   },
+   {
+    "pagina_ia": 10,
+    "tipo_visual": "grafico",
+    "nota": "tres graficos de linha com rotulos horizontais, empilhados na coluna esquerda + texto corrido"
+   },
+   {
+    "pagina_ia": 16,
+    "tipo_visual": "line-art",
+    "nota": "corte de diferencial automotivo em traco + texto corrido em duas colunas"
+   }
+  ],
+  "paginas_geradas": [
+   {
+    "idx_pdf": 0,
+    "pagina_ia": 6,
+    "tipo_visual": "tabela",
+    "nota": "tabela numerica com fios no alto da coluna esquerda + texto corrido abaixo; ha tambem foto meio-tom na coluna direita",
+    "px_origem": [
+     2200,
+     3170
+    ],
+    "pagina_pt": [
+     432.0,
+     622.47
+    ]
+   },
+   {
+    "idx_pdf": 1,
+    "pagina_ia": 10,
+    "tipo_visual": "grafico",
+    "nota": "tres graficos de linha com rotulos horizontais, empilhados na coluna esquerda + texto corrido",
+    "px_origem": [
+     2200,
+     3243
+    ],
+    "pagina_pt": [
+     432.0,
+     636.81
+    ]
+   },
+   {
+    "idx_pdf": 2,
+    "pagina_ia": 16,
+    "tipo_visual": "line-art",
+    "nota": "corte de diferencial automotivo em traco + texto corrido em duas colunas",
+    "px_origem": [
+     2200,
+     3201
+    ],
+    "pagina_pt": [
+     432.0,
+     628.56
+    ]
+   }
+  ],
+  "arquivo_bytes": 2908513
+ },
+ {
+  "arquivo": "os_portos_maritimos_v2.pdf",
+  "identifier": "osportosmaritimo02lour",
+  "subarquivo": "",
+  "titulo": "Os portos marítimos de Portugal, vol. 2",
+  "idioma": "pt-PT",
+  "url_origem": "https://archive.org/details/osportosmaritimo02lour",
+  "licenca": "INDEFINIDA — item sem licenseurl e sem possible-copyright-status; digitalizado pela University of Toronto",
+  "licenca_confirmada": false,
+  "versionavel": false,
+  "paginas": [
+   {
+    "pagina_ia": 95,
+    "tipo_visual": "tabela",
+    "nota": "mappa de rendimentos aduaneiros com fios + texto corrido abaixo"
+   },
+   {
+    "pagina_ia": 106,
+    "tipo_visual": "tabela",
+    "nota": "mappa de inclinacoes, tabela com fios no alto + texto corrido abaixo"
+   },
+   {
+    "pagina_ia": 232,
+    "tipo_visual": "tabela",
+    "nota": "mappa de navios entrados, tabela com fios + texto corrido abaixo"
+   }
+  ],
+  "paginas_geradas": [
+   {
+    "idx_pdf": 0,
+    "pagina_ia": 95,
+    "tipo_visual": "tabela",
+    "nota": "mappa de rendimentos aduaneiros com fios + texto corrido abaixo",
+    "px_origem": [
+     1200,
+     2114
+    ],
+    "pagina_pt": [
+     432.0,
+     761.04
+    ]
+   },
+   {
+    "idx_pdf": 1,
+    "pagina_ia": 106,
+    "tipo_visual": "tabela",
+    "nota": "mappa de inclinacoes, tabela com fios no alto + texto corrido abaixo",
+    "px_origem": [
+     1200,
+     2114
+    ],
+    "pagina_pt": [
+     432.0,
+     761.04
+    ]
+   },
+   {
+    "idx_pdf": 2,
+    "pagina_ia": 232,
+    "tipo_visual": "tabela",
+    "nota": "mappa de navios entrados, tabela com fios + texto corrido abaixo",
+    "px_origem": [
+     1200,
+     2114
+    ],
+    "pagina_pt": [
+     432.0,
+     761.04
+    ]
+   }
+  ],
+  "arquivo_bytes": 1015391
+ },
+ {
+  "arquivo": "tractado_clinica_propedeutica.pdf",
+  "identifier": "tractadodeclinic01cast",
+  "subarquivo": "",
+  "titulo": "Tractado de clínica propedêutica",
+  "idioma": "pt",
+  "url_origem": "https://archive.org/details/tractadodeclinic01cast",
+  "licenca": "INDEFINIDA — item sem licenseurl e sem possible-copyright-status; acervo Open Knowledge Commons",
+  "licenca_confirmada": false,
+  "versionavel": false,
+  "paginas": [
+   {
+    "pagina_ia": 156,
+    "tipo_visual": "line-art",
+    "nota": "diagrama anatomico do torax em traco, com letras de referencia + texto corrido"
+   },
+   {
+    "pagina_ia": 282,
+    "tipo_visual": "line-art",
+    "nota": "diagrama cardiometrico em traco + texto corrido"
+   },
+   {
+    "pagina_ia": 440,
+    "tipo_visual": "foto",
+    "nota": "esphygmogramma: faixa de registro em fundo preto (meio-tom real) + texto corrido"
+   }
+  ],
+  "paginas_geradas": [
+   {
+    "idx_pdf": 0,
+    "pagina_ia": 156,
+    "tipo_visual": "line-art",
+    "nota": "diagrama anatomico do torax em traco, com letras de referencia + texto corrido",
+    "px_origem": [
+     1500,
+     2339
+    ],
+    "pagina_pt": [
+     432.0,
+     673.63
+    ]
+   },
+   {
+    "idx_pdf": 1,
+    "pagina_ia": 282,
+    "tipo_visual": "line-art",
+    "nota": "diagrama cardiometrico em traco + texto corrido",
+    "px_origem": [
+     1500,
+     2339
+    ],
+    "pagina_pt": [
+     432.0,
+     673.63
+    ]
+   },
+   {
+    "idx_pdf": 2,
+    "pagina_ia": 440,
+    "tipo_visual": "foto",
+    "nota": "esphygmogramma: faixa de registro em fundo preto (meio-tom real) + texto corrido",
+    "px_origem": [
+     1500,
+     2339
+    ],
+    "pagina_pt": [
+     432.0,
+     673.63
+    ]
+   }
+  ],
+  "arquivo_bytes": 1366831
+ },
+ {
+  "arquivo": "viagem_ao_redor_do_brasil.pdf",
+  "identifier": "viagemaoredordob01fons",
+  "subarquivo": "",
+  "titulo": "Viagem ao redor do Brasil — Esboço chorographico da província de Matto-Grosso",
+  "idioma": "pt-BR",
+  "url_origem": "https://archive.org/details/viagemaoredordob01fons",
+  "licenca": "INDEFINIDA — item sem licenseurl e sem possible-copyright-status",
+  "licenca_confirmada": false,
+  "versionavel": false,
+  "paginas": [
+   {
+    "pagina_ia": 32,
+    "tipo_visual": "foto",
+    "nota": "gravura de paisagem (O Planalto) embutida entre dois blocos de texto, com legenda"
+   },
+   {
+    "pagina_ia": 35,
+    "tipo_visual": "foto",
+    "nota": "gravura (Os Itacolomis) embutida com texto acima e abaixo, com legenda"
+   },
+   {
+    "pagina_ia": 47,
+    "tipo_visual": "foto",
+    "nota": "gravura (Piscinas isoladas da Serra de Maracaju) no alto + texto corrido, com legenda"
+   }
+  ],
+  "paginas_geradas": [
+   {
+    "idx_pdf": 0,
+    "pagina_ia": 32,
+    "tipo_visual": "foto",
+    "nota": "gravura de paisagem (O Planalto) embutida entre dois blocos de texto, com legenda",
+    "px_origem": [
+     2200,
+     3501
+    ],
+    "pagina_pt": [
+     432.0,
+     687.47
+    ]
+   },
+   {
+    "idx_pdf": 1,
+    "pagina_ia": 35,
+    "tipo_visual": "foto",
+    "nota": "gravura (Os Itacolomis) embutida com texto acima e abaixo, com legenda",
+    "px_origem": [
+     2200,
+     3501
+    ],
+    "pagina_pt": [
+     432.0,
+     687.47
+    ]
+   },
+   {
+    "idx_pdf": 2,
+    "pagina_ia": 47,
+    "tipo_visual": "foto",
+    "nota": "gravura (Piscinas isoladas da Serra de Maracaju) no alto + texto corrido, com legenda",
+    "px_origem": [
+     2200,
+     3501
+    ],
+    "pagina_pt": [
+     432.0,
+     687.47
+    ]
+   }
+  ],
+  "arquivo_bytes": 3892127
+ },
+ {
+  "arquivo": "revista_maritima_brasileira_1884_v7.pdf",
+  "identifier": "per008567_1884_0007b",
+  "subarquivo": "",
+  "titulo": "Revista Marítima Brasileira, vol. 7 (julho 1884)",
+  "idioma": "pt-BR",
+  "url_origem": "https://archive.org/details/per008567_1884_0007b",
+  "licenca": "Public Domain Mark 1.0 (licenseurl declarado no item)",
+  "licenca_confirmada": true,
+  "versionavel": true,
+  "paginas": [
+   {
+    "pagina_ia": 116,
+    "tipo_visual": "tabela",
+    "nota": "tabela pequena de desvios no pe da pagina + texto corrido acima"
+   }
+  ],
+  "paginas_geradas": [
+   {
+    "idx_pdf": 0,
+    "pagina_ia": 116,
+    "tipo_visual": "tabela",
+    "nota": "tabela pequena de desvios no pe da pagina + texto corrido acima",
+    "px_origem": [
+     1500,
+     2332
+    ],
+    "pagina_pt": [
+     432.0,
+     671.62
+    ]
+   }
+  ],
+  "arquivo_bytes": 318584
+ }
+]

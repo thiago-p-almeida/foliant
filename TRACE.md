@@ -2369,3 +2369,219 @@ vista no próprio diff — a versão A era lixo com cara de inglês, a B era
 lixo com cara de português. Refeito com a mesma flag, o diff foi a
 **0**. Comparação de EPUB só vale contra um baseline gerado com os
 **mesmos argumentos**, e o `--lang` é o que muda mais e aparece menos.
+
+# Vigésimo quarto episódio — as duas premissas que travavam a detecção de figura eram falsas, o Leptonica caiu no mesmo padrão dos outros três, e o bloqueio real virou wheel binário
+
+Rodada de pesquisa de mercado + montagem do corpus da Etapa 0
+(`PESQUISA_EXTRACAO_VISUAL_2026.md`, `corpus_visual/`). Nenhum código de
+produção alterado, nenhuma dependência instalada.
+
+## As duas premissas que organizavam a discussão, e que não sobreviveram à fonte primária
+
+A rodada começou com um enquadramento herdado: *"modelo de layout é a
+solução óbvia, mas está bloqueado por licença — PubLayNet é CC-BY-NC — e
+por peso, +50-60 MB."* As duas metades são falsas.
+
+**Licença.** O `LICENSE.md` do repositório da IBM diz, textualmente, que
+as anotações do PubLayNet estão sob **CDLA-Permissive-1.0**, e que as
+imagens seguem os termos do *PMC Open Access Subset* — o subconjunto
+escolhido justamente por permitir uso comercial. O DocLayNet usa a
+**mesma** licença. E a CDLA-Permissive-1.0, na **Seção 3.4**, declara
+que não impõe "obrigações ou restrições sobre o Seu Uso ou Publicação de
+*Results*" de análise computacional dos dados. Um peso treinado é um
+*Result*: **o dataset não contamina o modelo**.
+
+A origem provável do erro é localizável: o *model zoo* do LayoutParser
+mistura datasets, e um deles — o **HJDataset** — é CC-BY-NC-SA-4.0.
+Generalizar a licença de um item do zoo para o zoo inteiro produz
+exatamente a afirmação falsa que estava em circulação.
+
+**Peso.** O **PP-DocLayout-S** pesa **4,8 MB** (`inference.pdiparams` =
+4.804.904 bytes, medido no card do Hugging Face), é Apache-2.0, e detecta
+as **mesmas 23 categorias** do irmão de 124 MB — `image`, `figure`,
+`chart`, `table`, `figure caption`, `table caption`. Os "+50-60 MB"
+descrevem a geração Detectron2/PubLayNet, não o estado da arte de
+2025-2026.
+
+**Nenhuma das duas estava escrita em `TRACE.md`, `ARCHITECTURE.md` ou
+`TASKS.md`.** Procurei com duas varreduras (`publaynet`, `cc-by-nc`,
+`onnx`, `layoutparser`, `detectron`, `50-60`, `peso do modelo`,
+`pré-treinado`, e variantes) e o único acerto foi a linha 1537, que diz
+corretamente que `onnxruntime` não está instalado. As premissas viviam
+**na cabeça, não no repositório** — não havia ponto para anotar correção.
+É por isso que este episódio é o registro canônico delas, e não um bloco
+de errata espalhado pelos documentos.
+
+Vale a lição de processo: uma premissa que nunca foi escrita também nunca
+foi revisada. As duas travaram uma linha de investigação inteira sem
+jamais passar por uma verificação de fonte primária, porque não havia
+onde alguém tropeçar nelas.
+
+## O Leptonica: o candidato mais barato possível, e a quarta ocorrência do mesmo padrão
+
+O Leptonica já está na máquina — é dependência do Tesseract
+(`libleptonica.6.dylib`, leptonica 1.87.0). Seus símbolos de segmentação
+de página estão exportados e são chamáveis por `ctypes`, que é stdlib:
+`pixGetRegionsBinary`, `pixGenerateHalftoneMask`, `pixGenTextblockMask`,
+`pixConnCompBB`. Custo de dependência: **zero**.
+`pixGetRegionsBinary()` devolve as três máscaras que o problema pede.
+
+Medido nas **mesmas 5 páginas** do décimo oitavo episódio:
+
+| página | DPI | máscara halftone | máscara textblock | tempo |
+|---|---|---|---|---|
+| FDE p.112 — **figura** | 200 | **0,00 %** | 4,33 % | 0,385 s |
+| Gil pg.178 — **figura** | 200 | **0,90 %** | 19,47 % | 0,332 s |
+| Gil-80 p.22 — prosa | 200 | 0,00 % | 31,39 % | 0,260 s |
+| Gil-80 p.46 — prosa | 200 | 0,00 % | 32,29 % | 0,709 s |
+| Gil-80 p.70 — prosa | 200 | 0,00 % | 27,14 % | 0,394 s |
+
+Nenhum blob de halftone ≥1 % da página em nenhuma das duas figuras.
+Precisão perfeita, **recall ≈ 0** — o mesmo perfil do `find_tables()`
+(16º episódio), do gap geométrico (16º) e do `ocr_photo` do hOCR (18º).
+**Quarta ocorrência.**
+
+E a causa é a mesma do `ocr_photo`, o que torna o resultado coerente em
+vez de surpreendente: máscara de *halftone* detecta **foto reticulada**,
+não *line-art*. Os dois casos-alvo do corpus são line-art. O `ocr_photo`
+do Tesseract é, por dentro, esse mesmo mecanismo.
+
+**O sinal secundário quase passou, e foi derrubado por uma troca de
+parâmetro.** A cobertura de `textblock_mask` separa bem a 200 DPI:
+figuras em 4,33 % e 19,47 %, prosa em 27,14-32,29 %. Mas a 300 DPI — que
+é a resolução de operação que o próprio Leptonica documenta — **o
+ordenamento inverte**: a prosa da p.46 cai para 7,69 %, *abaixo* da
+figura da pg.178 (15,50 %). Um sinal que troca de lado ao mudar o DPI de
+render não é um sinal. Se a medição tivesse sido feita só a 200 DPI, este
+episódio teria registrado um "achado promissor" falso.
+
+Custo, para registro: 0,26-0,71 s/página a 200 DPI, 4-12 % dos 6,08 s/pág
+já pagos pelo OCR. Barato. O problema nunca foi custo.
+
+## O bloqueio real não era licença nem peso: é wheel binário para x86_64
+
+Medido na API do PyPI:
+
+- **`onnxruntime`**: o último wheel macOS **x86_64** é o **1.23.2**
+  (`macosx_13_0_x86_64`, 19,2 MB). A versão corrente é a 1.30.0 e, para
+  macOS, publica **só arm64**. Funciona nesta máquina (exige macOS ≥ 13,0;
+  temos 13.7.8), mas está congelado.
+- **`opencv-python-headless`**: os wheels x86_64 de 4.13 em diante são
+  `macosx_14_0_x86_64` — exigem **macOS 14**, e um MacBook 2016 não vai
+  para o Sonoma. O último instalável aqui é o **4.12.0.88** (57,3 MB).
+
+Consequência: **OpenCV está fora desta plataforma**, o que derruba o
+`img2table` e a família clássica que depende dele — por indisponibilidade
+de wheel, não por preferência de estilo. A norma anti-`numpy`
+(`scripts/calibrar_ocr.py:60-73`) ganhou um reforço externo que não
+existia quando foi escrita.
+
+Estimativa de tamanho do sidecar, somando o que já está planejado:
+**37 MB hoje + 67 MB (Tesseract embutido, Task A) + ~41 MB (detecção:
+onnxruntime 19,2 + numpy 17 + modelo 4,8) ≈ 145 MB.** Esse é o número a
+levar para a decisão de produto, e é ele — não a licença — o custo real
+de adotar detecção por modelo.
+
+## O corpus: 13 páginas, 5 fontes, e um tipo visual que continua faltando
+
+Montado em `corpus_visual/` (detalhe em `corpus_visual/README.md`). O
+caso-alvo — figura embutida em página escaneada **que também tem texto
+corrido** — estava em **N=0** desde a Fase 4.20; agora tem **13 páginas e
+16 objetos anotados**, de 5 fontes e 5 acervos distintos, teto de 3
+páginas por fonte.
+
+Todos os PDFs foram montados a partir das **imagens** de página do
+Internet Archive, não do PDF que o IA distribui — porque aquele **tem**
+camada de OCR embutida, e uma página com texto nativo cai no ramo nativo
+de `extrair_texto_pagina` ([foliant.py:886](foliant.py#L886)), nunca no
+ramo OCR que o caso-alvo precisa exercitar. Verificado na geração:
+`get_text("text")` devolve **0 caracteres** nas 13 positivas e nas 18
+negativas novas.
+
+Cobertura: foto/meio-tom 5 objetos, tabela 5, line-art 3 — e **gráfico
+com rótulo horizontal 3, mas os três na mesma página**. Isso cumpre a
+letra do alvo e não o espírito: mede um exemplar, não a classe. Ficou
+registrado no README que **o recall de `gráfico` sai como inconclusivo
+por construção**, qualquer que seja o número. O motivo do buraco é
+estrutural: gráfico estatístico com eixo rotulado é raro em livro
+anterior a 1930, que é a faixa onde o domínio público é seguro.
+
+## Três armadilhas de método encontradas na montagem
+
+**1. O `ocr_photo` do Internet Archive acha foxing.** Quatro candidatas
+apontadas por ele foram rejeitadas na inspeção visual: eram manchas de
+papel envelhecido, não figuras. Precisão ruim onde o 18º episódio já
+havia achado recall ruim.
+
+**2. Triar candidata com um motor de layout envieza o corpus.** Usar os
+blocos `Picture`/`Table` do ABBYY para achar páginas tende a produzir um
+corpus de figuras que **um motor comercial consegue ver** — e portanto a
+**superestimar** o recall de qualquer detector que erre pelos mesmos
+motivos. Mitigado com triagem paralela por legenda escrita (regex de
+"Fig./Quadro/Tabela"), que é neutra quanto a motor, e com confirmação
+visual de toda candidata. O viés fica **declarado** no README em vez de
+escondido.
+
+**3. O esquema do ABBYY muda entre itens do IA.** Scans antigos usam
+`FineReader6-schema`, novos usam `FineReader10-schema`. O primeiro parser
+tinha o namespace fixo e devolveu **0 candidatas em 5 itens seguidos** —
+um falso negativo silencioso que passaria por "não tem figura nenhuma"
+se eu não tivesse conferido contra um `grep` cru que já havia mostrado 40
+blocos `Picture`. Parser de XML de terceiro: ignorar namespace por
+padrão.
+
+## O que esta rodada deliberadamente não fez
+
+Não instalou `onnxruntime` nem `numpy`, não rodou modelo nenhum, não
+mediu recall de nada. O critério de aceitação do Portão 1 está escrito em
+`corpus_visual/README.md` **antes** de qualquer execução, incluindo a
+exigência de reportar intervalo de Wilson junto do recall — com N=16,
+13/16 = 81,3 % tem IC95% de aproximadamente [57 %, 93 %], e um intervalo
+que cruza os 80 % é **inconclusivo**, não aprovado. Fixar o critério
+depois de ver o número transformaria o corpus de teste em corpus de
+ajuste.
+
+
+## Adendo ao vigésimo quarto episódio — o material da persona expôs um defeito que o corpus de acervo escondia
+
+A frente do `corpus_local` (27 digitalizações do próprio usuário,
+apostila e livro moderno, copiadora e celular) foi montada para cobrir o
+domínio que o corpus do Internet Archive não cobre. Ela cobriu — e de
+quebra expôs um defeito que nenhum corpus de acervo poderia ter
+mostrado.
+
+**12 das 20 páginas úteis estavam rotacionadas**: 3× 180°, 3× 90°, 6×
+270°. Digitalização de acervo sai alinhada porque tem berço e operador;
+foto de celular em cima da mesa, não. E o pipeline do Foliant **não tem
+nenhuma etapa de correção de orientação** — `extrair_texto_pagina`
+renderiza e manda para o OCR do jeito que veio.
+
+O reflexo seria usar o OSD do Tesseract (`--psm 0`), que já está
+instalado e devolve o ângulo. Medi antes de confiar, e ainda bem: a
+confiança ficou entre **0,55 e 33,5**, e ele **errou** a página
+`463802` — reportou `rotate=0` com confiança 1,42 numa página que está
+de lado. Usá-lo sem conferência teria produzido um corpus com rotação
+errada, e a anotação de caixa em cima dele seria lixo. Conferi as 20
+uma a uma no olho.
+
+**O que isso significa para a produção** (não investigado, só
+registrado): uma página rotacionada vai para o Tesseract de lado e volta
+como texto sem sentido — e pelo gate atual `if paragrafos:` ela **não**
+entra na RESSALVA, porque produziu parágrafos. É a **terceira** vez que
+o mesmo buraco aparece: o critério distingue "nenhum texto" de "algum
+texto" e segue sem distinguir **texto de lixo** (19º episódio,
+página-figura lida como OCR; Fase 4.15, threshold de confiança adiado;
+agora, página torta).
+
+Há um sinal colateral que vale não confundir: as **7 páginas em branco**
+do material também fizeram o OSD falhar — por ausência de caractere, não
+por rotação. Falha do OSD é indício de *página sem texto*, e quem for
+mexer em orientação precisa separar os dois casos antes de usar esse
+sinal para qualquer coisa.
+
+**A lição de corpus**: o corpus do Internet Archive é bom e não teria
+achado isto nunca. Acervo digitalizado profissionalmente é alinhado,
+iluminado e plano. O material da persona é torto, sombreado e curvo — e
+foi ele que mostrou que a primeira coisa que quebra não é a detecção de
+figura, é a orientação da página. Vale para a próxima decisão de onde
+investir: o corpus que parece pior é o que informa mais.

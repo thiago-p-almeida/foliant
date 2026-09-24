@@ -1,0 +1,50 @@
+[
+ {
+  "arquivo": "neg_os_portos_maritimos_v2.pdf",
+  "identifier": "osportosmaritimo02lour",
+  "titulo": "Os portos marítimos de Portugal, vol. 2",
+  "versionavel": false,
+  "paginas_ia": [
+   9,
+   55,
+   107,
+   157,
+   204,
+   265
+  ],
+  "n": 6,
+  "criterio": "ABBYY: fracao de texto >=0.30 e nenhum bloco Picture/Table >1% da pagina"
+ },
+ {
+  "arquivo": "neg_tractado_clinica.pdf",
+  "identifier": "tractadodeclinic01cast",
+  "titulo": "Tractado de clínica propedêutica",
+  "versionavel": false,
+  "paginas_ia": [
+   9,
+   81,
+   153,
+   226,
+   300,
+   371
+  ],
+  "n": 6,
+  "criterio": "ABBYY: fracao de texto >=0.30 e nenhum bloco Picture/Table >1% da pagina"
+ },
+ {
+  "arquivo": "neg_viagem_ao_redor_do_brasil.pdf",
+  "identifier": "viagemaoredordob01fons",
+  "titulo": "Viagem ao redor do Brasil",
+  "versionavel": false,
+  "paginas_ia": [
+   18,
+   143,
+   293,
+   445,
+   576,
+   721
+  ],
+  "n": 6,
+  "criterio": "ABBYY: fracao de texto >=0.30 e nenhum bloco Picture/Table >1% da pagina"
+ }
+]

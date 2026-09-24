@@ -3380,3 +3380,109 @@ pesquisável. Instância real no corpus: `falha_ocr_ilegivel.pdf`.
 
 **Defeitos abertos após esta fase**: fundo preto por SMask (5 de 41 no
 FDE); página em branco escaneada como imagem (sem amostra).
+
+## Etapa 0 da extração visual: premissas corrigidas e corpus do caso-alvo (2026-09-24)
+
+**Pedido**: montar o corpus de avaliação do caso-alvo (figura/tabela
+embutida em página escaneada de texto) com anotação de caixas, e corrigir
+nos documentos as duas premissas falsas achadas na pesquisa de mercado.
+Sem código de produção e sem instalar `onnxruntime`/`numpy`.
+
+**Critério de validação**: 12-20 páginas positivas, ≥3 por tipo visual,
+máximo 3 por livro, licença registrada por documento; corpus negativo
+contado por origem; critério do Portão 1 escrito antes de qualquer
+medição.
+
+**Resultado**:
+
+1. **Premissas falsas: não existiam nos documentos.** Duas varreduras
+   (`publaynet`, `cc-by-nc`, `onnx`, `layoutparser`, `detectron`,
+   `50-60`, `peso do modelo`, `pré-treinado`, variantes) sobre
+   `ARCHITECTURE.md`, `TRACE.md`, `TASKS.md`, `README.md` e
+   `AUDITORIA_ARQUITETURA_2026.md`: único acerto é `TRACE.md:1537`, que
+   afirma corretamente que `onnxruntime` não está instalado. **Não havia
+   ponto para anexar bloco de correção** — as premissas eram pressuposto
+   de trabalho, nunca escrito. Registradas como correção canônica no 24º
+   episódio do `TRACE.md` e na Fase 4.24 do `ARCHITECTURE.md`. ✔
+2. Fonte primária conferida: PubLayNet e DocLayNet sob CDLA-Permissive-1.0,
+   §3.4 sem restrição sobre *Results*; PP-DocLayout-S Apache-2.0 e 4,8 MB
+   (`inference.pdiparams` = 4.804.904 bytes). Origem provável do erro:
+   HJDataset (CC-BY-NC-SA-4.0) do zoo do LayoutParser. ✔
+3. Restrição de peso real registrada como **runtime**: onnxruntime 19,2 MB
+   + numpy 17 MB. Sidecar estimado em 37 + 67 (Tesseract, Task A) + ~41
+   ≈ **145 MB**. ✔
+4. **Leptonica testado e reprovado** (4ª ocorrência do padrão "precisão
+   perfeita, recall zero"): halftone 0,00 % / 0,90 % nas duas figuras
+   conhecidas; `textblock_mask` inverte o ordenamento entre 200 e 300 DPI. ✔
+5. **Corpus positivo**: 13 páginas, 16 objetos, 5 fontes, teto de 3
+   páginas/fonte respeitado. Todos com `get_text("text")` = 0 caracteres,
+   verificado na geração. ✔
+6. **Corpus negativo**: 224 páginas de 4 produtores — Gil-208 inteiro
+   menos capa e menos idx 178 (Gantt, **verificado** por render de
+   176/177/178), mais 18 só-texto de 3 scanners novos. Gil-80 excluído por
+   ser amostra dependente do Gil-208. ✔
+7. **Licença por documento** registrada em `corpus_visual/README.md`; os 3
+   documentos de licença indefinida ficam fora do repositório via
+   `corpus_visual/.gitignore`, junto com os JPGs de revisão derivados
+   deles (`git check-ignore` confere: 9 de 13 imagens ignoradas). ✔
+8. **Portão 1 fixado antes de medir**, com exigência de intervalo de
+   Wilson. ✔
+
+**Não cumprido, e por quê**: o tipo visual **gráfico com rótulo
+horizontal** tem 3 objetos, mas os três na **mesma página** — logo uma
+fonte, um desenhista, um scanner. Satisfaz a letra do alvo ("≥3 por
+tipo") e não o espírito. Registrado no README e na Fase 4.24 que o recall
+de `gráfico` sai **inconclusivo por construção**. Causa estrutural:
+gráfico com eixo rotulado é raro em livro anterior a 1930, a faixa onde o
+domínio público é seguro. Onde procurar na próxima rodada: anuários
+estatísticos brasileiros dos anos 1920-30, relatórios de comissões
+técnicas, revistas de engenharia do mesmo período.
+
+**Risco residual**: as 16 caixas são **proposta do agente**, lidas por
+inspeção visual sobre grade percentual de 5% num render a 200 DPI. Só
+viram ground truth depois da conferência humana em
+`corpus_visual/revisao.html`. E a triagem por ABBYY envieza o corpus na
+direção de figuras visíveis a um motor de layout comercial — declarado no
+README, mitigado por triagem paralela por legenda e confirmação visual
+página a página.
+
+
+## Etapa 0, frente B: corpus da persona a partir de material do usuário (2026-09-24)
+
+**Pedido**: triar 27 digitalizações fornecidas em `corpus_local/`, corrigir
+rotação, montar em PDF sem camada de texto, anotar as positivas e integrar
+ao Portão 1 — sem versionar nada desse material.
+
+**Resultado**:
+
+1. **`corpus_local/` NÃO estava no `.gitignore`** — os 27 arquivos apareciam
+   como rastreáveis em `git status`. Corrigido **antes** de tocar em qualquer
+   arquivo; reconferido ao final: `git status --untracked-files=all` mostra
+   **0** ocorrências. ✔
+2. **Triagem**: 13 positivas (caso-alvo), 7 páginas em branco com sombra,
+   7 fora do caso-alvo — uma delas, só-texto, reaproveitada como negativa em
+   vez de descartada. 13+7+7 = 27. ✔
+3. **Rotação**: 12 das 20 páginas legíveis precisaram de correção (3× 180°,
+   3× 90°, 6× 270°). Proposta pelo OSD do Tesseract (`--psm 0`), **conferida
+   visualmente uma a uma** — confiança entre 0,55 e 33,5, e o OSD errou em
+   `463802` (confiança 1,42). Registrada em campo próprio
+   (`rotacao_aplicada_graus`), não descartada. ✔
+4. **PDFs sem camada de texto**: `get_text("text")` = 0 caracteres nos três
+   arquivos gerados (13 positivas, 7 brancas, 1 negativa). ✔
+5. **Anotação**: 15 objetos nas 13 positivas, mesma estrutura do corpus
+   público (pct, pt, px a 200 DPI), com `revisao_local.html` para conferência
+   humana. ✔
+6. **Buraco do tipo 2 fechado**: gráfico com rótulo passa de 3 objetos numa
+   única página para **7 objetos em 4 páginas de 3 livros**. Deixa de ser
+   inconclusivo por construção. ✔
+7. **7 amostras novas de página em branco com sombra** — fecha a lacuna
+   registrada na Fase 4.22 ("escaneada como imagem de papel, sem amostra").
+   Todas as 7 fizeram o OSD falhar por ausência de caractere. Material para
+   aquela tarefa, não para este Portão. ✔
+8. Critério do Portão 1 atualizado: recall **separado por domínio**
+   (público ≤1930 vs local moderno), e páginas pré-rotacionadas sinalizadas. ✔
+
+**Risco residual**: as 15 caixas locais são **proposta do agente**, pendentes
+de conferência em `revisao_local.html`. E o recall medido sobre páginas que eu
+pré-rotacionei não é o recall numa apostila crua — o pipeline de produção não
+tem correção de orientação hoje; 12 de 20 páginas precisaram dela.

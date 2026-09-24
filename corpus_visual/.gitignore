@@ -1,0 +1,14 @@
+# Licença INDEFINIDA no Internet Archive (sem licenseurl e sem
+# possible-copyright-status). Regra da Etapa 0: documento sem licença clara
+# não entra no repositório — uso apenas local. Ver README.md, tabela de fontes.
+pdf/os_portos_maritimos_v2.pdf
+pdf/tractado_clinica_propedeutica.pdf
+pdf/viagem_ao_redor_do_brasil.pdf
+pdf_negativo/neg_os_portos_maritimos_v2.pdf
+pdf_negativo/neg_tractado_clinica.pdf
+pdf_negativo/neg_viagem_ao_redor_do_brasil.pdf
+
+# Os PNGs de revisão são derivados dessas mesmas páginas — mesma restrição.
+revisao/os_portos_maritimos_v2_idx*.jpg
+revisao/tractado_clinica_propedeutica_idx*.jpg
+revisao/viagem_ao_redor_do_brasil_idx*.jpg
