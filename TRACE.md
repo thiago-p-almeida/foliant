@@ -2233,3 +2233,139 @@ O texto da ressalva (`main.js`) e o marcador do EPUB (`foliant.py`)
 usam a palavra "OCR", que `design-system/project/guidelines/voice.card.html`
 lista explicitamente na coluna **Não faça**. Fora do escopo desta fase
 por decisão explícita.
+
+# Vigésimo terceiro episódio — a capa era o último alarme falso, e o gate quase caiu de novo
+
+O vigésimo segundo episódio terminou com a RESSALVA do Gil-208 reduzida
+de 13 páginas para `[1]`. Essa página 1 é a capa: imagem de página
+inteira, título e autor perfeitamente legíveis a olho nu, texto claro
+sobre fundo roxo. O Tesseract devolve **0 palavras** nela. Ela caía em
+`elif not html_titulo`, entrava na RESSALVA e ganhava marcador no EPUB
+— pedindo ao leitor que conferisse no original justamente a página que
+ele vê antes de abrir o livro, porque a imagem inteira dela já tinha
+sido entregue como capa via `--cover`.
+
+O caminho de supressão da Fase 4.17 existia e não pegava este caso. Ele
+exige que o OCR da página 0 produza texto que case com os metadados
+(`pagina0_e_duplicata_de_metadados`). Com o OCR devolvendo string
+vazia, não há o que casar. O caminho tinha sido desenhado contra o
+problema oposto — a capa do PEREIRA, cujo OCR sai bem demais e duplica
+título e autor como primeiro parágrafo do corpo.
+
+## O mapa que decidiu o critério
+
+Antes de escrever qualquer coisa, medimos a página 0 dos 4 livros e dos
+3 fixtures:
+
+| doc | capa extraída | texto pg1 | título | duplica metadado | efeito |
+|---|---|---|---|---|---|
+| Gil-80 | sim | 0 | não | não | **alvo** |
+| Gil-208 | sim | 0 | não | não | **alvo** |
+| FDE | sim | 129 | sim | não | inalterado (tem parágrafo) |
+| PEREIRA | sim | 75 | não | **sim** | inalterado (já suprimida na 4.17) |
+| ressalva_parcial | sim | 63 | não | não | inalterado (tem parágrafo) |
+| falha_ocr_ilegivel | sim | **0** | não | não | **reclassificada** |
+| falha_documento_em_branco | não | 0 | não | não | inalterado |
+
+A penúltima linha é a lição da tabela. `falha_ocr_ilegivel.pdf` é ruído
+puro — não tem capa nenhuma —, mas `extrair_capa` aceita a imagem
+porque ela cobre a página inteira, que é como **todo** livro escaneado
+se apresenta. Ou seja: o critério não consegue distinguir "página 1 é a
+capa" de "página 1 é a primeira página de texto, e é ilegível". Não é
+um defeito a corrigir depois; é o limite do sinal disponível.
+
+Foi isso que fixou o desenho: a correção **não silencia**. A capa sai
+da RESSALVA e do marcador, mas entra numa linha informativa neutra
+sempre visível (`CAPA:`), pelo mesmo motivo que `FIGURAS:` e `BRANCO:`
+aparecem sempre. Num PDF sem capa de verdade, o usuário lê "A primeira
+página do PDF virou a capa do livro", olha o PDF que tem na mão e vê a
+troca. Sem a linha, a página sumiria do EPUB sem marcador **e** sem
+aparecer em lugar nenhum — invisível exatamente para quem poderia
+detectá-la.
+
+## O gate quase caiu pela segunda vez, e de um jeito novo
+
+A Fase 4.22 já tinha ensinado que tirar uma categoria de
+`paginas_sem_texto` desarma o gate de falha total. A lição foi aplicada
+sem hesitar: a capa entra na soma.
+
+Só que somar não bastava. A **escolha do motivo** também estava errada,
+e de um jeito que a soma não revela. Num PDF de 1 página contendo só
+uma capa ilegível, `paginas_sem_texto` fica vazia e `paginas_capa` vale
+`[1]` — a soma cobre o documento, o gate dispara corretamente, e o
+`else` mandava `documento_sem_conteudo`, cuja mensagem no app diz que
+**todas as páginas estão em branco**. Para a página com mais tinta do
+arquivo, isso é simplesmente falso.
+
+A condição passou a ser `if paginas_sem_texto or paginas_capa`. A
+fronteira entre os dois motivos não é "quantas listas estão vazias", é
+**houve conteúdo?**: `documento_sem_conteudo` só quando tudo é página
+em branco. Fixture nova para travar isso:
+`tests/fixtures/falha_capa_ilegivel.pdf`, par de
+`falha_documento_em_branco.pdf` — as duas cobrem os dois ramos do mesmo
+gate.
+
+É a segunda fase seguida em que o gate de falha total é o lugar mais
+perigoso da mudança, e as duas vezes o dano seria silencioso: um EPUB
+vazio anunciado como sucesso, ou uma mensagem de erro factualmente
+falsa. Vale como regra: **toda fase que tira uma categoria de
+`paginas_sem_texto` precisa revisar a soma E a escolha do motivo.**
+
+## A palavra "OCR" volta, por decisão de produto
+
+O episódio anterior registrou como nota de voz que a ressalva e o
+marcador usam "OCR", termo que `voice.card.html` lista na coluna **Não
+faça**. A decisão foi **manter o termo e explicá-lo**: educa o leitor
+leigo e encontra quem procura uma "ferramenta de OCR". A exceção ficou
+registrada em CLAUDE.md, para não ser "corrigida" por engano numa
+sessão futura.
+
+A explicação fica **visível**, entre parênteses, e não escondida atrás
+do botão — uma explicação que o usuário precisa clicar para ver não
+explica nada a quem não sabe que precisa clicar.
+
+A primeira redação explicava o termo por extenso — "(leitura automática
+do texto nas imagens do PDF)" — e **não cabia** no alvo de 2 linhas:
+media 3 na largura padrão, exatamente as mesmas 3 do texto que já
+estava em produção. Encurtar o parêntese para "(leitura automática de
+texto)" resolveu sem perder a explicação.
+
+Medido no motor real, com `styles.css` de verdade (Inter 17px/27,2px):
+
+| largura da janela | coluna | 1ª redação | **final** | HEAD |
+|---|---|---|---|---|
+| 800px (padrão) | 438px | 3 linhas | **2 linhas** | 3 linhas |
+| 340px (mínima) | 218px | 5 linhas | **4 linhas** | 5 linhas |
+
+As 2 linhas na largura padrão valem para 1, 3, 13 e 208 páginas — o
+número não muda a quebra. Em 340px são 4, sem estouro de layout, uma a
+menos que o HEAD. Medido, não estimado: o Playwright não roda em
+macOS 13, então a medição saiu do Chrome headless carregando o
+`styles.css` real, com a largura de janela simulada por um wrapper de
+largura fixa (o Chrome recusa janela abaixo de 500px).
+
+## Validação
+
+- Gil-80 e Gil-208: `RESSALVA:` **desaparece** nos dois; `CAPA:` com
+  `[1]`; `BRANCO:` idêntico. Diff seção a seção contra o HEAD: **1**
+  diferença em cada livro, que é o marcador removido de `pg-1`. Clusters
+  de cabeçalho idênticos, contagem de `<h2>` idêntica (8 e 26).
+- `id="pg-1"` preservado no EPUB como
+  `<div id="pg-1" style="height:0pt">`, mesmo comportamento já
+  verificado na 4.22 para página em branco.
+- FDE e PEREIRA: **0** diferenças em 210 e 903 seções.
+- `ressalva_parcial.pdf`: só o texto do marcador muda, nas páginas 3 e 4.
+- `falha_ocr_ilegivel.pdf`: `FALHA:` continua `sem_texto_legivel`,
+  embora a página 1 mude de categoria por dentro.
+- `falha_capa_ilegivel.pdf` (nova): `sem_texto_legivel`, **não**
+  `documento_sem_conteudo`.
+
+## Armadilha de medição, registrada para não se repetir
+
+A primeira comparação do FDE acusou 7 diferenças, todas em páginas de
+figura. Não eram da mudança: o baseline tinha sido gerado com
+`--lang eng` e a nova execução usou o `por` padrão. O sinal estava à
+vista no próprio diff — a versão A era lixo com cara de inglês, a B era
+lixo com cara de português. Refeito com a mesma flag, o diff foi a
+**0**. Comparação de EPUB só vale contra um baseline gerado com os
+**mesmos argumentos**, e o `--lang` é o que muda mais e aparece menos.

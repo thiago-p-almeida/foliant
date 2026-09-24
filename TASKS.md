@@ -3330,3 +3330,53 @@ atual do marcador/ressalva (a palavra "OCR"), e o tratamento da capa.
 
 **Defeito aberto novo**: a capa entra na RESSALVA e ganha marcador no
 EPUB quando o OCR não a lê (os dois livros do Gil).
+
+## Fase 4.23: capa sai da RESSALVA e os textos passam a explicar "OCR" (2026-09-23)
+
+**O que foi feito**
+
+1. **Critério da capa** (`foliant.py`): página 0 cuja imagem já foi
+   entregue como capa (`capa_path is not None`) e que não produziu
+   parágrafo nem título sai de `paginas_sem_texto`. Flag estrutural
+   `pagina_capa` gravado em `primeira_passada`; a parte "nem parágrafo
+   nem título" fica na ordem das condições de `construir_html`, mesmo
+   padrão de `pagina_branca`. Seção vazia no EPUB, sem marcador,
+   preservando `id="pg-1"`.
+2. **Gate de falha total**: soma as três categorias, e a escolha do
+   motivo passa a ser `if paginas_sem_texto or paginas_capa` —
+   `documento_sem_conteudo` só quando tudo é página em branco. Fixture
+   nova `falha_capa_ilegivel.pdf` trava o ramo.
+3. **Telemetria e UI**: linha `CAPA:` no padrão de `FIGURAS:`/`BRANCO:`;
+   bloco `callout-info` sempre visível nas duas telas de conclusão, com
+   o texto "A primeira página do PDF virou a capa do livro".
+   `renderizarBlocoDePaginas` ganhou o caso sem lista de páginas.
+4. **Textos com "OCR"**: termo mantido e explicado, por decisão de
+   produto, na ressalva do app e no marcador do EPUB. Exceção ao guia de
+   voz registrada em CLAUDE.md.
+5. **Pendências da 4.22**: ressalva de scanner único no comentário de
+   `LIMIAR_PIXEL_ESCURO`; referência cruzada em ARCHITECTURE.md.
+
+**Critério de validação e resultado**
+
+1. Gil-80 e Gil-208: `RESSALVA:` de `[1]` para ausente; `CAPA:[1]`
+   presente; `BRANCO:` inalterado. ✔
+2. `<p>` de todas as demais páginas idêntico ao HEAD — 1 única
+   diferença por livro, o marcador removido de `pg-1`. Clusters de
+   cabeçalho e contagem de `<h2>` idênticos. ✔
+3. FDE (210 seções) e PEREIRA (903 seções) com **0** diferenças. ✔
+4. `ressalva_parcial.pdf`: só o texto do marcador muda (páginas 3 e 4). ✔
+5. `falha_capa_ilegivel.pdf` → `sem_texto_legivel`, não
+   `documento_sem_conteudo`. ✔
+6. Ressalva medida no motor real: **2 linhas** na largura padrão (800px)
+   para 1, 3, 13 e 208 páginas; 4 em 340px, sem estouro de layout. A
+   primeira redação media 3 e 5 — o parêntese foi encurtado para
+   "(leitura automática de texto)". ✔
+7. Protocolo de build completo antes da validação manual. ✔
+
+**Risco aceito**: num PDF **sem capa de verdade**, uma página 1 de texto
+ilegível é anunciada como "virou a capa" em vez de "não pôde ser lida".
+A imagem da página está no livro (como capa), mas o texto dela não fica
+pesquisável. Instância real no corpus: `falha_ocr_ilegivel.pdf`.
+
+**Defeitos abertos após esta fase**: fundo preto por SMask (5 de 41 no
+FDE); página em branco escaneada como imagem (sem amostra).

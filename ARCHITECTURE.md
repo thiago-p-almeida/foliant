@@ -3600,6 +3600,11 @@ A condição 3 é guarda, não detector: nas 15 páginas do corpus é
 tautologia (mínimo 255, a 127 pontos da guarda). Existe contra o PDF
 que ainda não vimos.
 
+A fronteira medida entre "tom escuro" e "textura de papel": ver o
+comentário de `LIMIAR_PIXEL_ESCURO` em `foliant.py`, que traz a varredura
+por limiar e a ressalva de que ela vem do papel de um único scanner. Os
+números não são duplicados aqui de propósito — dois lugares divergem.
+
 ### Propriedade de segurança
 
 O erro caro — esconder uma falha real de transcrição sob o rótulo de
@@ -3671,3 +3676,74 @@ física do PDF, usada pela lista de páginas da UI, fica intacta.
    devolve texto que casa com os metadados; com OCR vazio, não casa.
    Acontece nos dois livros do Gil — e é a única falha real de
    transcrição das duas listas de RESSALVA.
+
+## Fase 4.23 — capa fora da RESSALVA
+
+### Critério
+
+Página 0, **e** `capa_path is not None` (a imagem da página já foi
+entregue ao leitor por `--cover`), **e** a página não produziu parágrafo
+nem título. Nenhum número calibrado: as duas primeiras condições são
+estruturais, e a terceira é a mesma condição binária que já decidia
+entre parágrafo real e marcador.
+
+O flag `pagina_capa` é gravado em `primeira_passada` olhando **só** a
+estrutura; quem aplica a parte "nem parágrafo nem título" é a ordem das
+condições em `construir_html`. Mesma propriedade de segurança da Fase
+4.22: uma página que produziu texto nunca depende desta classificação.
+
+### O que ela NÃO distingue
+
+`extrair_capa` aceita qualquer imagem que cubra a página inteira — que é
+como **todo** livro escaneado se apresenta. Logo o critério não separa
+"página 1 é a capa" de "página 1 é a primeira página de texto, e é
+ilegível". Instância real: `tests/fixtures/falha_ocr_ilegivel.pdf`.
+
+**Risco aceito**: nesse caso a página aparece como "virou a capa" em vez
+de "não pôde ser lida". Nada se perde do conteúdo — a imagem da página
+está no livro, como capa — mas o texto dela não fica pesquisável. A
+mitigação é a linha `CAPA:` **sempre visível** na tela de conclusão: é
+o que mantém a troca conferível por quem tem o PDF na mão.
+
+### Gate de falha total — soma e motivo
+
+Duas fases seguidas tiraram uma categoria de `paginas_sem_texto`, e nas
+duas o gate foi o ponto mais perigoso da mudança:
+
+| | 4.22 (branco) | 4.23 (capa) |
+|---|---|---|
+| soma | + `paginas_branco` | + `paginas_capa` |
+| motivo | motivo novo `documento_sem_conteudo` | `documento_sem_conteudo` só quando **tudo** é branco |
+
+Na 4.23 não bastou somar: com o `else` anterior, um PDF de 1 página só
+com capa ilegível sairia como `documento_sem_conteudo` ("todas as
+páginas estão em branco"), factualmente falso para a página com mais
+tinta do arquivo. Condição corrigida para
+`if paginas_sem_texto or paginas_capa`. Fixtures que travam os dois
+ramos: `falha_capa_ilegivel.pdf` e `falha_documento_em_branco.pdf`.
+
+**Regra**: toda fase que tirar uma categoria de `paginas_sem_texto`
+precisa revisar a **soma** e a **escolha do motivo**.
+
+### Textos de usuário: "OCR" mantido e explicado
+
+Decisão de produto (ver CLAUDE.md): o termo é usado de propósito, com
+explicação em linguagem simples e **visível** na tela do app, contra a
+recomendação de `voice.card.html`.
+
+Medição no motor real (Inter 17px/27,2px): **2 linhas** na largura
+padrão de 800px — para 1, 3, 13 ou 208 páginas — e 4 em 340px, sem
+estouro de layout. A primeira redação, com o parêntese por extenso
+("leitura automática do texto nas imagens do PDF"), media 3 e 5: não
+cabia no alvo e empatava com o texto anterior. O parêntese foi
+encurtado para "(leitura automática de texto)".
+
+### Defeitos abertos (atualizado)
+
+1. Imagem extraída com fundo preto (SMask não aplicado) — 5 de 41 no
+   FDE. Fase 4.14.
+2. Página em branco **escaneada como imagem de papel** — não detectada
+   pelo critério estrutural da 4.22; continua na RESSALVA (falso
+   negativo, o erro barato). Sem amostra.
+3. ~~A capa entra na RESSALVA e ganha marcador no EPUB~~ — **resolvido
+   na Fase 4.23**, com o risco aceito descrito acima.

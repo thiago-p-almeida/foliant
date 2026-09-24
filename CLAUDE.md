@@ -83,3 +83,22 @@ export TESSDATA_PREFIX=~/micromamba/envs/foliant-ocr/share/tessdata
 (symlink para `/Applications/calibre.app/Contents/MacOS/ebook-convert`).
 Ambos os binários (`tesseract`, `ebook-convert`) são checados em
 `REQUIRED_BINARIES` (`foliant.py`) antes de qualquer conversão real.
+
+## Exceção ao guia de voz: a palavra "OCR"
+
+`design-system/project/guidelines/voice.card.html` lista "OCR" na coluna
+**Não faça**. Em dois textos essa recomendação é contrariada **de
+propósito**, por decisão de produto (Fase 4.23):
+
+- o aviso de ressalva na tela de conclusão do app (`desktop/src/main.js`);
+- o marcador de página ilegível no EPUB (`foliant.py`).
+
+Motivo: manter o termo e **explicá-lo** educa o leitor leigo e ao mesmo
+tempo encontra o público avançado que procura uma "ferramenta de OCR".
+Na tela do app a explicação vem entre parênteses e **visível** — não
+escondida atrás de um botão, porque uma explicação que exige clique não
+explica nada a quem não sabe que precisa clicar. No marcador do EPUB o
+texto é curto, por causa da tela pequena do e-reader.
+
+**Não remover** o termo desses dois textos por aderência ao guia de voz.
+Fora deles, o guia vale integralmente.
