@@ -1023,6 +1023,19 @@ def classificar_pagina_figura(
 # funcionaria — qualquer ponto até 220 daria zero neste papel — e é essa
 # largura, não o valor exato, que sustenta a escolha.
 #
+# LIMITE DESSA MEDIÇÃO: as 5 faixas vêm do papel de UM ÚNICO scanner, o
+# que digitalizou os livros do Gil. Papel mais escuro, mais amarelado ou
+# escaneado com outro ganho pode baixar a fronteira de 220 — não há
+# amostra de segunda fonte para dizer o quanto. O vigésimo episódio já
+# mostrou o que a segunda fonte costuma fazer com um número de fonte
+# única (o piso de cobertura caiu 1,75 ponto ao aparecer o segundo
+# livro). Portanto: a folga de ~92 pontos NÃO autoriza subir
+# LIMIAR_PIXEL_ESCURO sem amostra nova — ela justifica 128 estar
+# confortável onde está, e nada além disso. O valor de 128 em si não
+# depende dessa medição: mesmo que a fronteira caísse muito, 128 segue
+# do lado escuro, e a condição de uso continua sendo "exatamente zero
+# pixels abaixo dele", sem grau de liberdade.
+#
 # Folga nos dois lados, para o caso de alguém querer mexer. Do lado
 # positivo: as 15 páginas em branco do corpus (3 no Gil-80, 12 no
 # Gil-208) renderizam a RENDER_DPI com cinza médio EXATAMENTE 255,000 e
@@ -1469,6 +1482,24 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
             }
             if pagina_capa_suprimida:
                 registro["pagina_capa_suprimida"] = True
+            elif i == 0 and capa_path is not None:
+                # Página 0 cuja imagem JÁ foi entregue ao leitor como capa
+                # (`--cover`), mas que NÃO caiu no caminho de supressão da
+                # Fase 4.17 acima — porque aquele caminho exige que o OCR
+                # produza texto que case com os metadados, e aqui o OCR
+                # pode ter devolvido string vazia. Era exatamente o caso
+                # dos dois livros do Gil: capa de texto claro sobre fundo
+                # roxo, Tesseract devolve 0 palavras, e a página entrava
+                # na RESSALVA como "não pôde ser transcrita" embora a
+                # imagem inteira dela já estivesse no livro.
+                #
+                # O flag é ESTRUTURAL de propósito: só diz "a imagem desta
+                # página virou a capa", não olha texto. Quem decide se ela
+                # vira informação neutra é a ORDEM das condições em
+                # `construir_html` — igual ao que se faz com
+                # `pagina_branca`. Assim uma página 0 que produziu texto
+                # nunca depende desta classificação.
+                registro["pagina_capa"] = True
             if pagina_figura:
                 registro["pagina_figura"] = True
             if pagina_branca:
@@ -1556,7 +1587,7 @@ def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -
 
 def construir_html(
     cache_path: Path, html_path: Path, titulo: str, cabecalhos: set[str], lang: str
-) -> tuple[list[int], list[int], list[int]]:
+) -> tuple[list[int], list[int], list[int], list[int]]:
     """Passo 2/2: lê o cache de texto por página (streaming, sem OCR novo)
     e escreve o HTML final, removendo o cabeçalho de seção repetido
     (quando é a primeira linha da página), promovendo o título de
@@ -1566,8 +1597,9 @@ def construir_html(
     em `extrair_linhas_nativas()`) como `<img>`/`<figure>` na posição em
     que apareceram no texto original — não anexadas ao fim da página.
 
-    Retorna (páginas sem texto, páginas-figura, páginas em branco), as
-    três na numeração física do PDF, 1-based — a mesma usada em
+    Retorna (páginas sem texto, páginas-figura, páginas em branco,
+    página de capa), as quatro na numeração física do PDF, 1-based — a
+    mesma usada em
     `id="pg-{i+1}"` abaixo, não um rótulo de numeração impressa que o
     PDF possa declarar via /PageLabels.
 
@@ -1593,8 +1625,14 @@ def construir_html(
     original. Agora a seção sai vazia, sem o marcador de "não pôde ser
     transcrita", e a página é contada à parte.
 
-    A ordem das duas condições abaixo importa e é deliberada: "em
-    branco" só é avaliada DEPOIS de `if paragrafos:` e do título, ou
+    A quarta lista é a da página de CAPA (ver `primeira_passada`): a
+    página 0 cuja imagem já foi entregue como capa do livro e que não
+    produziu parágrafo nem título. Ela saía na primeira lista até a Fase
+    4.23, e era o último alarme falso das duas listas do Gil — depois da
+    4.22 a RESSALVA do Gil-208 era `[1]`, e esse `[1]` é a capa.
+
+    A ordem das condições abaixo importa e é deliberada: "em branco" e
+    "capa" só são avaliadas DEPOIS de `if paragrafos:` e do título, ou
     seja, só para páginas que já não produziram nada. Uma página com
     texto nunca depende da classificação — é por construção, no ponto de
     uso, que o erro caro (esconder falha real de transcrição) fica
@@ -1609,6 +1647,7 @@ def construir_html(
     paginas_sem_texto: list[int] = []
     paginas_figura: list[int] = []
     paginas_branco: list[int] = []
+    paginas_capa: list[int] = []
 
     with cache_path.open(encoding="utf-8") as cache, html_path.open("w", encoding="utf-8") as out:
         out.write(HTML_HEADER.format(titulo=html.escape(titulo), lang=lang_html_de_ocr(lang)))
@@ -1621,6 +1660,7 @@ def construir_html(
             inicio_paragrafo = registro["inicio_paragrafo"]
             pagina_capa_suprimida = registro.get("pagina_capa_suprimida", False)
             pagina_branca = registro.get("pagina_branca", False)
+            pagina_capa = registro.get("pagina_capa", False)
             if registro.get("pagina_figura", False):
                 paginas_figura.append(i + 1)
 
@@ -1720,18 +1760,41 @@ def construir_html(
                 # reescrevendo a seção sem filhos como
                 # `<div id="pg-N" style="height:0pt">`.
                 paginas_branco.append(i + 1)
+            elif pagina_capa and not html_titulo:
+                # Página 0 cuja imagem já é a capa do livro (ver
+                # `primeira_passada`) e que não produziu parágrafo nem
+                # título: seção VAZIA, sem o marcador de "não pôde ser
+                # lida". Nada se perde — a página inteira está no livro,
+                # entregue como capa — e pedir ao leitor que confira o
+                # original numa página que ele vê na primeira tela do
+                # e-reader é alarme falso.
+                #
+                # O `and not html_titulo` é explícito e NÃO é redundante
+                # com o ramo seguinte: ao contrário de uma página em
+                # branco, uma capa PODE produzir título, e nesse caso ela
+                # não deve ser reclassificada.
+                #
+                # Isto NÃO silencia: a página sai em `CAPA:` e vira linha
+                # neutra sempre visível na tela de conclusão. É o que
+                # mantém conferível o falso positivo conhecido — num PDF
+                # que começa direto numa página de TEXTO, sem capa de
+                # verdade, `extrair_capa` ainda aceita a imagem de página
+                # inteira (todo livro escaneado é assim), e uma página 1
+                # de texto ilegível aparece como "virou a capa". Instância
+                # real no corpus: `tests/fixtures/falha_ocr_ilegivel.pdf`.
+                paginas_capa.append(i + 1)
             elif not html_titulo:
                 paginas_sem_texto.append(i + 1)
                 marcador = (
-                    f"[Página {i+1} do PDF original não pôde ser transcrita pelo "
-                    "OCR — verifique o arquivo original nesta página.]"
+                    f"[Página {i+1}: o OCR não conseguiu ler esta página. "
+                    "Confira no PDF original.]"
                 )
                 out.write(f"<p>{html.escape(marcador)}</p>\n")
             out.write("</section>\n")
 
         out.write(HTML_FOOTER)
 
-    return paginas_sem_texto, paginas_figura, paginas_branco
+    return paginas_sem_texto, paginas_figura, paginas_branco, paginas_capa
 
 
 # O Calibre não emite uma % contínua — só 3 marcas fixas ao longo da
@@ -1893,22 +1956,30 @@ def main() -> None:
                 # vez da mensagem genérica de qualquer outra falha.
                 print(f'FALHA:{json.dumps({"motivo": "estrutura_invalida", "detalhe": str(erro)})}')
                 sys.exit(1)
-            paginas_sem_texto, paginas_figura, paginas_branco = construir_html(
+            paginas_sem_texto, paginas_figura, paginas_branco, paginas_capa = construir_html(
                 cache_path, html_path, titulo=titulo, cabecalhos=cabecalhos, lang=args.lang
             )
 
-            # Gate de documento sem conteúdo aproveitável. A soma das DUAS
-            # categorias é o que tem de cobrir o livro: desde a Fase 4.22
-            # a página em branco sai de `paginas_sem_texto`, e checar só
-            # essa lista deixaria um PDF 100% em branco passar direto pelo
-            # gate — o Calibre rodaria e o app anunciaria SUCESSO sobre um
-            # EPUB vazio. Os dois motivos são distintos de propósito: um
-            # diz que a transcrição falhou, o outro que não havia nada a
-            # transcrever. FALHA: segue o mesmo padrão de linha estruturada
-            # de PROGRESS:/ANALISE:/INSPECAO:, para o app desktop
-            # distinguir a causa específica de um erro genérico.
-            if total > 0 and len(paginas_sem_texto) + len(paginas_branco) == total:
-                if paginas_sem_texto:
+            # Gate de documento sem conteúdo aproveitável. A soma das TRÊS
+            # categorias é o que tem de cobrir o livro: cada fase que tira
+            # uma categoria de `paginas_sem_texto` precisa devolvê-la
+            # aqui, senão o gate se desarma em silêncio — o Calibre roda e
+            # o app anuncia SUCESSO sobre um EPUB vazio. Foi assim na 4.22
+            # (página em branco) e é assim na 4.23 (capa): um PDF de 1
+            # página só com capa ilegível vira um livro sem nenhum texto.
+            #
+            # A escolha do motivo NÃO pode olhar só `paginas_sem_texto`.
+            # `documento_sem_conteudo` diz ao usuário que todas as páginas
+            # estão em branco; num PDF de capa ilegível isso é falso — a
+            # página é a mais cheia de tinta do arquivo. Por isso a capa
+            # entra no mesmo lado que `paginas_sem_texto`: houve conteúdo,
+            # a leitura é que não saiu. FALHA: segue o mesmo padrão de
+            # linha estruturada de PROGRESS:/ANALISE:/INSPECAO:, para o
+            # app desktop distinguir a causa específica de um erro
+            # genérico. Fixtures que cobrem os dois ramos:
+            # falha_capa_ilegivel.pdf e falha_documento_em_branco.pdf.
+            if total > 0 and len(paginas_sem_texto) + len(paginas_branco) + len(paginas_capa) == total:
+                if paginas_sem_texto or paginas_capa:
                     print('FALHA:{"motivo": "sem_texto_legivel"}')
                 else:
                     print('FALHA:{"motivo": "documento_sem_conteudo"}')
@@ -1941,6 +2012,22 @@ def main() -> None:
             # invisível exatamente para quem poderia detectá-lo.
             if paginas_branco:
                 print(f"BRANCO:{json.dumps({'paginas_branco': paginas_branco})}")
+
+            # CAPA: completa o trio de linhas informativas de sucesso
+            # (FIGURAS:/BRANCO:/CAPA:) e é a MAIS importante das três em
+            # termos de observabilidade, porque é a que tem um falso
+            # positivo conhecido e plausível: todo livro escaneado tem a
+            # página 1 como imagem inteira, então `extrair_capa` aceita
+            # essa imagem mesmo num PDF que começa direto numa página de
+            # texto, sem capa de verdade. Nesse caso uma página de texto
+            # ilegível é anunciada como "virou a capa" em vez de "não
+            # pôde ser lida". Emitida SEMPRE, nunca condicionada a o
+            # número parecer estranho — é por esta linha que quem tem o
+            # PDF na mão consegue perceber a troca. Lista (e não escalar)
+            # para manter a simetria com as outras duas linhas e com a
+            # soma do gate acima.
+            if paginas_capa:
+                print(f"CAPA:{json.dumps({'paginas_capa': paginas_capa})}")
     except KeyboardInterrupt:
         # Propagada pelo handler de SIGTERM acima (ou por Ctrl+C manual, uso
         # normal em terminal) — o `with` já rodou __exit__ e removeu o

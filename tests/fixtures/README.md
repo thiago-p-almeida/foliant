@@ -71,6 +71,31 @@ code 1`, nenhum `.epub` gerado. O motivo é distinto de
 havia nada a transcrever. No app desktop leva à tela "falha" com a
 mensagem "Este PDF não tem nenhuma página com conteúdo…".
 
+## `falha_capa_ilegivel.pdf` (1 página, ~465 KB)
+
+A primeira página de `falha_ocr_ilegivel.pdf` (ruído puro, ilegível),
+sozinha num PDF de 1 página. Como é uma imagem que cobre a página
+inteira, `extrair_capa` a aceita como capa — e o OCR não devolve
+palavra nenhuma.
+
+**Por que esta fixture existe**: a Fase 4.23 tirou a capa de
+`paginas_sem_texto`, e o gate de falha total voltou a correr o risco que
+a 4.22 já tinha corrigido uma vez — com um agravante. Não basta somar a
+nova categoria: a **escolha do motivo** também precisa mudar. Com o
+`else` anterior, este PDF (uma página cheia de tinta) sairia como
+`documento_sem_conteudo`, cuja mensagem no app diz que *todas as páginas
+estão em branco* — factualmente falsa para este arquivo. Nenhum
+documento do corpus exercita o caminho "só capa, e ilegível".
+
+**Comportamento esperado e confirmado**: a página 1 é classificada como
+capa, `paginas_sem_texto` fica vazia, a soma das três categorias cobre o
+documento e o motivo sai como
+`FALHA:{"motivo": "sem_texto_legivel"}` — não
+`documento_sem_conteudo` — com `exit code 1` e nenhum `.epub` gerado.
+
+Par com `falha_documento_em_branco.pdf`: as duas cobrem os dois ramos da
+escolha de motivo no mesmo gate.
+
 ## `falha_corrompido.pdf` (60.000 bytes)
 
 `samples/001-080.pdf` truncado nos primeiros 60.000 bytes
@@ -123,6 +148,17 @@ doc = pymupdf.open()
 for _ in range(4):
     doc.new_page(width=578.16, height=824.40)
 doc.save("tests/fixtures/falha_documento_em_branco.pdf")
+```
+
+```python
+import pymupdf
+
+# Só a página 1 de falha_ocr_ilegivel.pdf: imagem de página inteira
+# (que `extrair_capa` aceita como capa) e ilegível para o OCR.
+src = pymupdf.open("tests/fixtures/falha_ocr_ilegivel.pdf")
+out = pymupdf.open()
+out.insert_pdf(src, from_page=0, to_page=0)
+out.save("tests/fixtures/falha_capa_ilegivel.pdf", garbage=4, deflate=True)
 ```
 
 ```python

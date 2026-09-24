@@ -512,6 +512,18 @@ function processarLinha(linha, estadoLinhas) {
     log(linha);
     return;
   }
+  // CAPA: (ver foliant.py, main) — a primeira página do PDF virou a capa
+  // do livro e por isso não entra no corpo. Mesmo tratamento de
+  // FIGURAS:/BRANCO: — não é ressalva e nunca muda o estado final.
+  if (linha.startsWith("CAPA:")) {
+    try {
+      estadoLinhas.capa = JSON.parse(linha.slice("CAPA:".length));
+    } catch {
+      /* mal-formada: segue sem o detalhe, log bruto abaixo */
+    }
+    log(linha);
+    return;
+  }
   // ANALISE: (emitido pelo pipeline real, ver foliant.py) não tem mais
   // UI própria em "convertendo" — a contagem nativas/escaneadas já foi
   // mostrada em "antes de converter" via --inspect. Cai no log bruto
@@ -529,19 +541,20 @@ async function aoClicarCancelar() {
   if (!havia) log("Nada para cancelar (nenhuma conversão em andamento).");
 }
 
-async function finalizarConversaoComSucesso(ressalva, figuras, branco) {
+async function finalizarConversaoComSucesso(ressalva, figuras, branco, capa) {
   await invoke("registrar_epub_gerado", { caminho: sessao.saida });
   const paginas = ressalva?.paginas_sem_texto;
-  // `paginasFigura` e `paginasBranco` viajam para os DOIS estados finais:
-  // a informação é a mesma tenha havido ressalva ou não, e nenhuma delas
-  // influencia a escolha entre eles (página-figura e página em branco são
-  // sucesso, não ressalva).
+  // `paginasFigura`, `paginasBranco` e `paginasCapa` viajam para os DOIS
+  // estados finais: a informação é a mesma tenha havido ressalva ou não,
+  // e nenhuma delas influencia a escolha entre eles (página-figura,
+  // página em branco e capa são sucesso, não ressalva).
   const paginasFigura = figuras?.paginas_figura || [];
   const paginasBranco = branco?.paginas_branco || [];
+  const paginasCapa = capa?.paginas_capa || [];
   if (paginas && paginas.length > 0) {
-    transicionarPara("com_ressalva", { paginasSemTexto: paginas, paginasFigura, paginasBranco });
+    transicionarPara("com_ressalva", { paginasSemTexto: paginas, paginasFigura, paginasBranco, paginasCapa });
   } else {
-    transicionarPara("pronto", { paginasFigura, paginasBranco });
+    transicionarPara("pronto", { paginasFigura, paginasBranco, paginasCapa });
   }
 }
 
@@ -586,6 +599,7 @@ async function iniciarConversao() {
           estadoLinhas.ressalva,
           estadoLinhas.figuras,
           estadoLinhas.branco,
+          estadoLinhas.capa,
         );
       } else {
         log(`Processo finalizado com erro (código ${dados.code}).`);
@@ -726,6 +740,7 @@ function renderizarPronto(dados = {}) {
 
   renderizarFiguras(dados.paginasFigura);
   renderizarBranco(dados.paginasBranco);
+  renderizarCapa(dados.paginasCapa);
   popularLogTemplate();
   ligarSegmentadoDispositivo();
   telaEl.querySelector("#btn-reiniciar").addEventListener("click", () => irParaSelecionar());
@@ -779,16 +794,48 @@ function renderizarBranco(paginasBranco = []) {
   });
 }
 
+// Linha informativa da capa, mesmas duas telas e mesmo tom das de
+// página-figura e página em branco. A primeira página do PDF virou a
+// capa do livro: ela não entra no corpo, e até a Fase 4.23 isso era
+// anunciado como "não pôde ser transcrita" — alarme falso sobre a única
+// página que o leitor vê antes de abrir o livro.
+//
+// Sem lista de páginas: é sempre a página 1, por construção
+// (`extrair_capa` só olha a página 0), e oferecer "Ver a lista de
+// páginas" para um item só seria ruído.
+//
+// Aparece SEMPRE, e aqui isso importa mais do que nos outros dois
+// blocos: todo livro escaneado tem a página 1 como imagem inteira,
+// então num PDF que começa direto numa página de TEXTO, sem capa de
+// verdade, uma página ilegível pode aparecer como "virou a capa". Esta
+// linha é o que torna essa troca perceptível para quem tem o PDF.
+function renderizarCapa(paginasCapa = []) {
+  renderizarBlocoDePaginas("#capa-info", {
+    titulo: "Primeira página",
+    texto: "A primeira página do PDF virou a capa do livro.",
+    paginas: [],
+    visivel: paginasCapa.length > 0,
+  });
+}
+
 // Bloco informativo neutro com lista de páginas sob demanda,
-// compartilhado por `renderizarFiguras` e `renderizarBranco`. Tom `info`
+// compartilhado por `renderizarFiguras`, `renderizarBranco` e
+// `renderizarCapa`. Tom `info`
 // do design system (azul de marca, `callout-info`) e ícone `info`: o
 // âmbar é reservado a "aviso do sistema, ressalva"
 // (design-system/project/guidelines/colors-semantic.card.html), e
-// nenhum dos dois casos é ressalva.
-function renderizarBlocoDePaginas(seletor, { titulo, texto, paginas }) {
+// nenhum dos três casos é ressalva.
+//
+// `visivel` separa "não há o que mostrar" de "não há lista de páginas":
+// o padrão continua sendo esconder quando `paginas` está vazio, mas a
+// capa precisa aparecer SEM lista (é sempre a página 1) e passa
+// `visivel` explicitamente. Sem essa separação, a alternativa seria ou
+// um segundo renderizador quase idêntico, ou um botão "Ver a lista de
+// páginas" revelando um item só.
+function renderizarBlocoDePaginas(seletor, { titulo, texto, paginas, visivel }) {
   const containerEl = telaEl.querySelector(seletor);
   if (!containerEl) return;
-  if (paginas.length === 0) {
+  if (visivel === undefined ? paginas.length === 0 : !visivel) {
     containerEl.hidden = true;
     return;
   }
@@ -807,23 +854,27 @@ function renderizarBlocoDePaginas(seletor, { titulo, texto, paginas }) {
   corpo.className = "callout-corpo";
   corpo.textContent = texto;
 
-  const lista = document.createElement("p");
-  lista.className = "ajuda";
-  lista.textContent = `Páginas: ${paginas.join(", ")}`;
-  lista.hidden = true;
+  conteudo.append(tituloEl, corpo);
 
-  const acoes = document.createElement("div");
-  acoes.className = "callout-acoes";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btn-fantasma";
-  btn.textContent = "Ver a lista de páginas";
-  btn.addEventListener("click", () => {
-    lista.hidden = !lista.hidden;
-  });
-  acoes.appendChild(btn);
+  if (paginas.length > 0) {
+    const lista = document.createElement("p");
+    lista.className = "ajuda";
+    lista.textContent = `Páginas: ${paginas.join(", ")}`;
+    lista.hidden = true;
 
-  conteudo.append(tituloEl, corpo, acoes, lista);
+    const acoes = document.createElement("div");
+    acoes.className = "callout-acoes";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn-fantasma";
+    btn.textContent = "Ver a lista de páginas";
+    btn.addEventListener("click", () => {
+      lista.hidden = !lista.hidden;
+    });
+    acoes.appendChild(btn);
+    conteudo.append(acoes, lista);
+  }
+
   containerEl.append(criarIcone("info", "icone"), conteudo);
 }
 
@@ -835,11 +886,23 @@ function renderizarBlocoDePaginas(seletor, { titulo, texto, paginas }) {
 // ARCHITECTURE.md para a evidência dessa distinção.
 function renderizarComRessalva(dados = {}) {
   const paginas = dados.paginasSemTexto || [];
-  const totalPaginas = sessao.inspecao?.paginas;
   const textoEl = telaEl.querySelector("#ressalva-texto");
+  // "OCR" é usado DE PROPÓSITO aqui, contrariando o guia de voz
+  // (design-system/project/guidelines/voice.card.html lista "OCR" na
+  // coluna "Não faça") — decisão de produto registrada em CLAUDE.md:
+  // explicar o termo educa o público leigo e ao mesmo tempo encontra
+  // quem procura uma "ferramenta de OCR". Por isso a explicação vem
+  // entre parênteses, visível no corpo, e não escondida atrás do botão.
+  //
+  // O total ("N de TOTAL páginas") saiu: ele alongava a frase sem
+  // ajudar — o número que importa é quantas páginas conferir, e a lista
+  // exata está a um clique.
   textoEl.textContent =
-    `${paginas.length} de ${totalPaginas ?? "?"} páginas não puderam ser transcritas ` +
-    "e foram marcadas no livro. Confira o PDF original nessas páginas.";
+    paginas.length === 1
+      ? "1 página não pôde ser lida pelo OCR (leitura automática de texto). " +
+        "Confira no PDF original."
+      : `${paginas.length} páginas não puderam ser lidas pelo OCR (leitura ` +
+        "automática de texto). Confira no PDF original.";
 
   const listaEl = telaEl.querySelector("#ressalva-lista-paginas");
   if (listaEl) {
@@ -852,6 +915,7 @@ function renderizarComRessalva(dados = {}) {
 
   renderizarFiguras(dados.paginasFigura);
   renderizarBranco(dados.paginasBranco);
+  renderizarCapa(dados.paginasCapa);
   popularLogTemplate();
   ligarSegmentadoDispositivo();
   telaEl.querySelector("#btn-reiniciar").addEventListener("click", () => irParaSelecionar());
