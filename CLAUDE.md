@@ -102,3 +102,20 @@ texto é curto, por causa da tela pequena do e-reader.
 
 **Não remover** o termo desses dois textos por aderência ao guia de voz.
 Fora deles, o guia vale integralmente.
+
+## Push com binário: `http.postBuffer` já ajustado neste clone
+
+Commits que carregam binário (PDF de corpus, imagem de revisão, peso de
+modelo) estouram o buffer padrão de 1 MB do git e o push falha com
+`HTTP 400 / RPC failed / the remote end hung up unexpectedly` — erro que
+**não** indica problema de rede nem de credencial.
+
+Este clone já tem a correção aplicada, **local ao repositório** (não é
+`--global`):
+
+```
+git config http.postBuffer 524288000
+```
+
+Se o mesmo erro aparecer noutra máquina, é esse o ajuste — conferir com
+`git config --get http.postBuffer` antes de investigar outra causa.

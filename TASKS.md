@@ -3486,3 +3486,87 @@ ao Portão 1 — sem versionar nada desse material.
 de conferência em `revisao_local.html`. E o recall medido sobre páginas que eu
 pré-rotacionei não é o recall numa apostila crua — o pipeline de produção não
 tem correção de orientação hoje; 12 de 20 páginas precisaram dela.
+
+## Etapa 1: medição do PP-DocLayout-S contra o corpus do caso-alvo (2026-09-24/25)
+
+**Pedido**: medir o PP-DocLayout-S contra o corpus validado da Etapa 0 e
+reportar o Portão 1 (passa / reprova / inconclusivo). Medição pura, sem tocar
+`foliant.py`, `desktop/` ou o `.venv` do projeto. Segunda rodada (25/09): fechar
+as pendências da primeira e registrar.
+
+**Resultado: INCONCLUSIVO** — precisão atingida (**0 falso positivo em 216
+páginas**, IC95 [0 – 1,75%]), recall não (62,5% público, 66,7% local, contra
+~80%), com IC de Wilson cruzando os 80% nos dois domínios.
+
+**Caminho aprovado pelo usuário**: resolver **orientação de página primeiro**,
+decidir sobre o modelo depois, com números completos.
+
+**Validação**:
+
+- ✔ Ambiente isolado: `venv_layout` fora do `.venv` do projeto, onnxruntime
+  1.23.2 + numpy 2.2.6, compatibilidade verificada antes de medir.
+- ✔ Throttling registrado (padrão da Fase 4.15): `CPU_Speed_Limit` em 45–50%
+  durante toda a corrida. Tempos não normalizados, portanto pessimistas.
+- ✔ Bloqueio do Passo 1 investigado antes de improvisar: `paddlepaddle==3.0.0`
+  instala e roda; o `paddle2onnx` é que está quebrado (wheel `universal2` com
+  binário arm64 puro, em 4 versões testadas).
+- ✔ Exportação de terceiro **verificada numericamente** contra o checkpoint
+  oficial em **46 páginas / 4.414 detecções**: zero divergência de classe,
+  score ≤1,4×10⁻⁶, caixa ≤3,8×10⁻³ px. Origem, licença (Apache-2.0), sha256 e
+  tamanho registrados.
+- ✔ Pré/pós-processamento lido do `inference.yml` oficial; NMS confirmado
+  presente no grafo ONNX por inspeção de nó.
+- ✔ Regras do portão gravadas no cabeçalho do script **antes** da primeira
+  execução; limiar mantido no 0,50 oficial, sem ajuste.
+- ✔ Cada uma das 9 páginas com detecção no corpus negativo inspecionada com
+  render **antes** de contar. Nenhuma era erro — todas tinham objeto real.
+- ✔ Corpus negativo corrigido para **216 páginas** (retiradas as 9). As 9 **não**
+  foram promovidas a positivas — foram achadas pelo modelo, viciaria o recall.
+- ✔ As 11 falhas reclassificadas sobre **todas** as detecções, não só as acima
+  do limiar, somando 11: **6** caixa certa abaixo do corte + **2** tipo trocado
+  + **1** gabarito largo + **2** quase passando nos dois eixos = 11, com
+  **0 não-detecções**. "Zero não-detecções" = nenhum dos 31 objetos ficou sem
+  caixa candidata em nenhum limiar (pior caso do corpus: IoU 0,382).
+- ✔ Registrado que **baixar o limiar para recuperar as 6 caixas seria calibrar
+  no gabarito do Portão 1**; qualquer ajuste de limiar exige corpus de
+  validação separado deste.
+- ✔ Memória decomposta com controle (mesmo laço com e sem detector) e testada
+  por 197 páginas seguidas: platô em ~390 MB, sem crescimento.
+- ✔ Recall reportado separado por domínio e por tipo, sempre com Wilson 95%.
+- ✔ Rotação medida nas duas versões, fora do portão.
+- ✔ Recall sem distinção de tipo registrado como **pós-hoc**, explicitamente
+  fora do portão.
+- ✔ Revisão do critério (ganho × custo em vez de corte fixo) registrada com a
+  declaração de que foi feita **depois** de ver o resultado.
+- ✔ Correção ao 18º episódio registrada em bloco próprio no TRACE, sem
+  reescrever o texto original.
+- ✔ Script em `scripts/medir_layout_portao1.py`, sem dependência do venv do
+  projeto.
+- ✔ `corpus_local/` continua integralmente fora do controle de versão; toda a
+  saída da medição foi gravada fora do repositório.
+
+**Erros meus corrigidos na segunda rodada** (os três estavam no relatório da
+primeira):
+
+1. **"5 não-detecções"** — artefato de só olhar detecções acima do limiar. O
+   número real é **zero**; em 8 das 11 falhas o modelo localizou o objeto.
+2. **"pico de 440 MB contra os 282 MB do pipeline"** — comparação entre
+   métricas diferentes (`maxRSS` vs `peak memory footprint`). O custo marginal
+   real é **+116,4 MiB** de peak footprint.
+3. **Corpus negativo de 225 páginas** tratado como limpo, quando 9 tinham
+   objeto visual real.
+
+**Não cumprido / risco residual**:
+
+- Adotar o detector **romperia a referência de regressão de RAM** do projeto
+  (~300 MB de peak footprint; iria a 410,5 MiB). Mitigação conhecida (arena do
+  onnxruntime) **não testada**.
+- O Gil-208 **não** foi varrido página a página: pode haver mais figura entre as
+  197 restantes, que o modelo não viu.
+- **2 caixas do gabarito** são largas o bastante para derrubar o IoU sem culpa
+  do modelo. **Não foram corrigidas**: redesenhar depois de ver o resultado é
+  calibrar no teste.
+- Procedência do peso depende de export de terceiro — verificado numericamente,
+  mas **não regenerável nesta máquina** (paddle2onnx sem binário x86_64).
+- N=16 e N=15 dão IC de ~40 pontos. O Portão 1 não se resolve com medição
+  melhor, e sim com corpus maior.

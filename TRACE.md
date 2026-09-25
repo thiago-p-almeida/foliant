@@ -2585,3 +2585,105 @@ iluminado e plano. O material da persona é torto, sombreado e curvo — e
 foi ele que mostrou que a primeira coisa que quebra não é a detecção de
 figura, é a orientação da página. Vale para a próxima decisão de onde
 investir: o corpus que parece pior é o que informa mais.
+
+## Vigésimo quinto episódio — o modelo achou tudo que o corpus negativo escondia, e o limiar cortou as caixas certas
+
+A Etapa 1 tinha um bloqueio previsto e um imprevisto. O previsto — "será que
+`paddlepaddle` instala num MacBook 2016?" — não era bloqueio nenhum:
+`paddlepaddle==3.0.0` tem wheel `cp311-macosx_10_9_x86_64`, instalou e rodou
+inferência sem reclamar. O imprevisto estava uma camada abaixo. Todas as wheels
+de macOS do `paddle2onnx` — testei 1.3.1, 2.0.1, 2.0.2rc3 e 2.1.0 — são
+publicadas com a tag `macosx_12_0_universal2`, e o `.so` dentro das quatro é
+**arm64 puro**. O pip instala em silêncio, porque confia na tag, e o erro só
+aparece no `dlopen`. Converter o modelo aqui é impossível, e não por limitação
+da máquina: por empacotamento errado no PyPI.
+
+Isso empurrou para uma exportação de terceiro, e aí veio a parte que valeu a
+pena. O único ONNX do PP-DocLayout-S que existe é de um repositório com zero
+downloads e autor desconhecido. Checksum não resolve: ele prova que o arquivo
+não mudou, não que é o modelo certo. Mas como o `paddlepaddle` **roda** nesta
+máquina, deu para fazer a prova de verdade — rodei o checkpoint oficial e o
+ONNX sobre as mesmas entradas e comparei saída com saída. Em 46 páginas e
+**4.414 linhas de detecção**, nenhuma divergência de classe, score diferindo
+no máximo 1,4×10⁻⁶ e caixa 3,8×10⁻³ px. A procedência ficou estabelecida por
+equivalência numérica contra o peso oficial, não por confiança no autor.
+
+Aí veio o resultado que quase virou erro de leitura. O modelo disparou 12
+detecções em 9 páginas do corpus **negativo** — o que, contado direto, seria
+reprovação por falta de precisão. O README da Etapa 0 tinha escrito, antes de
+qualquer medição: *"Se a Etapa 1 acusar falso positivo no Gil-208, inspecionar
+a página antes de contá-la como erro."* Inspecionei as 9. **Nenhuma era erro.**
+Eram a Figura 1.1, os Quadros 7.1, 7.2, 7.5 e 7.6, a Tabela 11.1, a Tabela 1 do
+IBGE, a Figura 20.2 e o logotipo da abdr — todas figuras e tabelas reais, dentro
+de páginas marcadas como negativas. Tirando essas 9, sobram **216 negativas com
+zero falso positivo**. Elas não viraram positivas: foram achadas pelo próprio
+modelo, e promovê-las a gabarito seria medir recall contra objetos que ele já
+provou que enxerga.
+
+O que caiu junto foi uma afirmação nossa, e está corrigida em bloco próprio mais
+abaixo: o 18º episódio dizia que a pg. 178 era a única figura real do Gil-208.
+Não é. Foi o modelo que auditou o nosso corpus, não o contrário.
+
+**E aí eu errei o diagnóstico, e o erro só apareceu na segunda rodada.** A
+primeira versão do relatório dizia que em 5 das 11 falhas o modelo "não achou
+nada". Isso era artefato de método: eu só tinha olhado as detecções **acima do
+limiar de 0,50**, e por isso não via o que o modelo produzia abaixo dele.
+Refazendo a conta sobre todas as detecções, **não existe um único caso de "não
+achou nada"**. Em 8 das 11 falhas o modelo desenhou uma caixa com IoU ≥ 0,50
+sobre o objeto certo — e a perdeu por confiança baixa (6 casos) ou por rótulo
+errado (2 casos, tabela saindo como `image`, um deles com IoU 0,85).
+
+O modo de falha real é outro, e é específico. Na página `463485`, o modelo emite
+**uma** caixa `image` de score 0,588 que engole o retrato, o título, a foto da
+casa e as duas legendas num bloco só — e emite **também** as caixas justas de
+cada foto, com score 0,28 e 0,35, IoU 0,71 e 0,87. O limiar de 0,50 cai
+exatamente entre as duas: passa a caixa grossa, corta as certas. O problema
+deste modelo neste corpus não é enxergar o objeto; é calibração de confiança em
+material de 1915 e de celular, e granularidade — fundir figura com legenda.
+
+Isso **não** mexeu no Portão 1. Baixar o limiar depois de ver o corpus é
+calibrar no gabarito, e o número do portão continua sendo o de 0,50: 62,5% e
+66,7%, inconclusivo. Mas muda o que o número significa, e é a diferença entre
+"o modelo não serve" e "o corte está no lugar errado para este material".
+
+Um terceiro erro meu, esse de comparação: reportei "pico de 425–447 MB" contra
+os "~282 MB do pipeline". São métricas diferentes — os 282 MB do projeto são
+`peak memory footprint`, os 440 eram `maxRSS`, e o próprio pipeline tem maxRSS
+de 449 MiB. Refeito com controle (o mesmo laço de 197 páginas, com e sem o
+detector): carregar o modelo custa só **~26 MB** de RSS, e um render a 200 DPI
+custa mais que o modelo inteiro. Mas o `peak memory footprint` sobe de 294 MiB
+para 410 MiB — **+116 MiB**, que não vêm do peso e sim do alocador de arena do
+onnxruntime. O `ARCHITECTURE.md` fixa "não passar de ~300MB (peak memory
+footprint)" como referência de regressão, e essa referência **seria rompida**.
+A memória ficou constante ao longo das 197 páginas (platô em ~390 MB desde a
+página 24), então não é vazamento — é reserva.
+
+A lição tem três metades, e as três são sobre desconfiar da própria medição. A
+primeira: um detector bom o suficiente vira auditor do gabarito — ele achou
+figura onde a gente tinha jurado que não havia. A segunda: a salvaguarda que
+salvou a medição foi uma frase escrita **antes** de medir, mandando olhar antes
+de contar; sem ela, 12 acertos do modelo teriam virado 12 erros dele. A
+terceira, a mais cara: **filtrar antes de diagnosticar esconde o diagnóstico**.
+Olhar só o que passa do limiar transformou "caixa certa com confiança baixa" em
+"não achou nada", e comparar duas métricas de memória com o mesmo nome
+transformou +116 MiB em +158 MiB de susto. Nos dois casos o dado bruto estava
+lá desde a primeira rodada.
+
+## Correção ao décimo oitavo episódio — a pg. 178 não é a única figura do Gil-208
+
+O 18º episódio afirma que a pg. 178 (o gráfico de Gantt) é "a única figura de
+conteúdo real do corpus escaneado". **É falso.** A medição da Etapa 1
+(25º episódio) encontrou, só entre as páginas que o PP-DocLayout-S detectou,
+**pelo menos 9 outras páginas** do Gil-208 com figura ou tabela real: idx 5
+(logo abdr), 24 (Figura 1.1), 88 (Quadros 7.1 e 7.2), 89 (Quadro 7.5), 90
+(Quadro 7.6), 123 (Tabela 11.1), 169 (tabela comparativa), 180 (Figura 20.2) e
+190 (Tabela 1, IBGE).
+
+O número real é **pelo menos 10** (essas 9 mais a 178) e provavelmente maior —
+são só as que um modelo viu, e ninguém varreu o livro página a página. A
+afirmação original nunca foi verificada; a Etapa 0 já a tinha marcado como
+herdada e não reverificada (`corpus_visual/README.md` §4), e foi exatamente por
+causa dessa marcação que a Etapa 1 inspecionou antes de contar.
+
+O texto do 18º episódio **não** foi reescrito, conforme a regra do projeto: a
+correção mora aqui.

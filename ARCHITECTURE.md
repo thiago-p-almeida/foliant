@@ -3950,3 +3950,209 @@ de produto sobre pedir confirmação ao usuário.
 3. **Orientação de página não é corrigida** — novo nesta fase, descrito
    acima. 12 de 20 páginas de material real de celular rotacionadas; OSD
    do Tesseract não confiável o bastante para automatizar.
+
+## Fase 4.25 — Etapa 1: PP-DocLayout-S medido contra o corpus da Etapa 0
+
+**Resultado: INCONCLUSIVO**, encostado na reprovação. Precisão perfeita, recall
+abaixo da meta nos dois domínios. Nada em `foliant.py`, `desktop/` ou no `.venv`
+do projeto foi tocado — medição pura, em venv isolado.
+Relatório completo: `PORTAO1_PP_DOCLAYOUT_S_2026.md`.
+Script: `scripts/medir_layout_portao1.py`.
+
+**Caminho aprovado**: resolver **orientação de página primeiro**, decidir sobre
+o PP-DocLayout-S depois, com números completos.
+
+### Obtenção do modelo
+
+O peso oficial (`PaddlePaddle/PP-DocLayout-S`, Apache-2.0) é Paddle, não ONNX, e
+a PaddlePaddle não publica `_onnx` para o `-S` (só para V2, V3 e plus-L).
+
+Conversão local é **impossível nesta máquina**, e não por causa do
+`paddlepaddle` — esse tem wheel x86_64 e funciona. O bloqueio é o
+`paddle2onnx`: todas as wheels de macOS (1.3.1 a 2.1.0) trazem tag
+`universal2` com binário **arm64 puro** dentro. Erro de empacotamento no PyPI.
+
+Usado: `stefanj0/PP-DocLayout-S-ONNX`, Apache-2.0,
+sha256 `33688dbe…e830aec8`, 4.917.852 bytes — **verificado por equivalência
+numérica** contra o checkpoint oficial rodando em `paddlepaddle==3.0.0` local,
+sobre **46 páginas / 4.414 detecções**: zero divergência de classe, score
+diferindo no máximo 1,4×10⁻⁶, caixa 3,8×10⁻³ px.
+
+Contrato confirmado no `inference.yml` oficial, não por suposição: 23 categorias
+na mesma ordem, entrada 480×480 sem keep_ratio, normalização ImageNet, e **NMS
+embutido no grafo** (`NonMaxSuppression.0`, score 0,3 / IoU 0,5 / top-k 100) —
+não é preciso implementar supressão.
+
+### Números do portão
+
+| critério | meta | resultado | passa? |
+|---|---|---|---|
+| recall público (≤1930) | ~80% | 10/16 = 62,5% IC95 [38,6–81,5%] | não |
+| recall local (moderno) | ~80% | 10/15 = 66,7% IC95 [41,7–84,8%] | não |
+| falso positivo | ~0 | **0 em 216 páginas**, IC95 [0 – 1,75%] | **sim** |
+
+Limiar 0,50 (`draw_threshold` oficial, não ajustado), IoU 0,50, domínios nunca
+somados.
+
+### Corpus negativo: contaminado, e corrigido aqui
+
+As 12 detecções em 9 páginas "negativas" foram inspecionadas uma a uma com
+render antes de serem contadas, como a regra da Etapa 0 mandava. **Nenhuma era
+erro**: Figura 1.1, Quadros 7.1/7.2/7.5/7.6, Tabela 11.1, Tabela 1 (IBGE),
+Figura 20.2 e o logo abdr — objetos reais.
+
+O corpus negativo passa de 225 para **216 páginas** (197 do Gil-208 + 18 dos
+três scanners + 1 do `corpus_local`), com **0 falso positivo**. As 9 **não**
+entram como positivas: foram encontradas pelo próprio modelo, e promovê-las
+viciaria o recall.
+
+**Corrige uma afirmação do 18º episódio do TRACE** (bloco de correção próprio lá):
+a pg. 178 não é a única figura real do Gil-208 — são pelo menos 10.
+
+### Perfil das 11 falhas de recall — revisto
+
+A primeira leitura ("5 não-detecções") estava **errada**: só olhava detecções
+acima do limiar. Sobre todas as detecções:
+
+| diagnóstico | n |
+|---|---|
+| caixa certa (IoU ≥ 0,50) **abaixo** do limiar de 0,50 | **6** |
+| tipo trocado (`table` saindo como `image`; IoU 0,64 e **0,85**) | **2** |
+| gabarito largo — a caixa do modelo cobre o objeto melhor que a minha (IoU 0,38) | **1** |
+| quase passa nos dois eixos — gráficos de oscilógrafo (IoU 0,41 @ 0,47 e 0,45 @ 0,49) | **2** |
+| **não-detecções** | **0** |
+| **total** | **11** |
+
+**"Zero não-detecções" quer dizer, precisamente**: nenhum dos 31 objetos do
+corpus ficou sem caixa candidata **em nenhum limiar**. Varrendo todas as
+detecções das classes visuais em qualquer score, o pior objeto do corpus tem
+uma caixa com **IoU 0,382**, e nenhum tem IoU 0. O modelo não deixou de ver
+nada — o que falhou foi passar do corte ou acertar o rótulo.
+
+Em **8 das 11** o modelo localizou o objeto corretamente. O modo de falha é
+**caixa grossa com confiança alta + caixa certa com confiança baixa**: na
+página `463485`, uma `image` de score 0,588 engole retrato + título + foto +
+legendas (IoU 0,11 e 0,42), enquanto as caixas justas saem com score 0,28 e
+0,35 e IoU **0,71** e **0,87**. O limiar de 0,50 cai entre as duas.
+
+O problema neste corpus **não é enxergar o objeto** — é calibração de confiança
+em material de 1915 e de celular, e granularidade (fundir figura com legenda).
+
+**E não, baixar o limiar não é uma saída disponível aqui.** Recuperar as 6
+caixas certas que ficaram abaixo de 0,50 exigiria mexer no corte **depois** de
+ter visto onde elas caem — isto é, **calibrar no gabarito do próprio Portão 1**,
+que é exatamente o que a regra da Etapa 0 proíbe. O número deixaria de medir o
+modelo e passaria a medir o ajuste. Qualquer mexida em limiar — para cima ou
+para baixo — só vale medida contra um **corpus de validação separado deste**,
+montado antes e nunca usado para escolher o valor. Enquanto esse corpus não
+existir, o limiar fica no 0,50 oficial.
+
+
+### Desempenho (MacBook 2016, CPU limitada a 45–50% durante toda a corrida)
+
+| métrica | valor |
+|---|---|
+| inferência, mediana | ≈ 0,57 s/página (~10× mais barato que os 6,08 s do OCR) |
+| inferência, p90 | ≈ 0,89 s/página |
+| carga do modelo | ≈ 1,2 s, uma vez por processo |
+
+### Memória, decomposta — e a referência de regressão que seria rompida
+
+A primeira rodada comparou "425–447 MB" com os "~282 MB do pipeline". **A
+comparação estava errada**: 282 MB é `peak memory footprint`, 440 MB era
+`maxRSS` (o pipeline tem maxRSS de 383,7–449,0 MiB). Refeito medindo as duas.
+
+Custo de carregar o modelo, isolado: **~25,7 MB** (import do onnxruntime +
+sessão), e ~0,4 MB por inferência. **Um render a 200 DPI custa +61 MB — mais
+que o modelo inteiro.**
+
+Constância: 197 páginas seguidas, RSS em platô de ~390 MB desde a página 24.
+**Não cresce** — a invariante de RAM constante se mantém.
+
+Custo marginal real (mesmo laço, com e sem detector, `/usr/bin/time -l`):
+
+| | só render | render + detector | custo |
+|---|---|---|---|
+| `maximum resident set size` | 475,3 MiB | 449,5 MiB | ~0 (ruído) |
+| **`peak memory footprint`** | **294,1 MiB** | **410,5 MiB** | **+116,4 MiB (+40%)** |
+
+O controle valida o método: só-render dá 294,1 MiB, perto dos 281,9 MiB medidos
+no pipeline real.
+
+**Os +116 MiB não vêm do peso** (que são 26 MB) e sim do **alocador de arena do
+onnxruntime**. A referência de regressão declarada na seção "Validação de carga"
+— *"pico de RAM não deve passar de ~300MB (peak memory footprint)"* — **seria
+rompida**. Reduzir a arena (`arena_extend_strategy`, ou desligá-la) é o caminho
+conhecido e **não foi tentado**: esta rodada é de medição.
+
+### Rotação: número no defeito aberto da Fase 4.24
+
+As 11 páginas do `corpus_local` que precisaram de correção, medidas nas duas
+versões (caixas do modelo giradas de volta ao referencial do gabarito):
+
+| versão | acertos |
+|---|---|
+| corrigida | 9/13 |
+| torta, como veio do celular | **2/13** (em 5 delas, nada) |
+
+Sem correção de orientação, detecção de figura em material de celular não
+funciona. O defeito deixa de ser hipótese e vira **pré-requisito** — e é por
+isso que o caminho aprovado é orientação primeiro.
+
+### Sanidade (fora do portão)
+
+Gil idx178 (Gantt) → `chart` 0,64. FDE idx27 → `chart` 0,68. FDE idx28 → nada.
+Coerente com a Fase 4.21.
+
+### Recall sem distinção de tipo — pós-hoc, não altera o portão
+
+**Declarado pós-hoc**: formulado depois de ver o resultado. No Foliant, tabela e
+figura teriam a **mesma ação** (embutir como imagem), então tabela detectada
+como `image` levaria ao resultado certo.
+
+| domínio | portão | pós-hoc (tipo ignorado) |
+|---|---|---|
+| público | 10/16 = 62,5% [38,6–81,5%] | **12/16 = 75,0%** [50,5–89,8%] |
+| local | 10/15 = 66,7% [41,7–84,8%] | 10/15 = 66,7% [41,7–84,8%] |
+
+Continua inconclusivo: [50,5–89,8%] cruza os 80% dos dois lados.
+
+### Revisão do critério para a próxima medição — feita DEPOIS de ver o resultado
+
+**Declarado**: o que segue foi formulado **após** conhecer o resultado, e por
+isso **não** se aplica ao Portão 1 desta rodada, que continua julgado pela regra
+original. Vale a partir da próxima medição.
+
+Com a invariante das Fases 4.20/4.21 — **embutir a figura sem remover o
+texto** — os dois erros possíveis são baratos:
+
+| erro | consequência real no EPUB |
+|---|---|
+| figura não detectada | **status quo** — nada piora em relação a hoje |
+| falso positivo | uma **imagem redundante**; o texto continua legível |
+
+Um corte fixo de recall trata "não detectar" como reprovação, quando é empate
+com o estado atual. A decisão futura deve pesar **ganho × custo**:
+
+- **ganho**: quantas figuras reais passam a ser embutidas, por domínio;
+- **tamanho**: +4,8 MB do modelo, +19,2 MB do onnxruntime no sidecar;
+- **memória**: **+116 MiB de peak footprint**, que rompe a referência de ~300 MB
+  — hoje o item mais caro;
+- **procedência**: o único ONNX do `-S` é export de terceiro (verificado
+  numericamente), e o `paddle2onnx` não roda em x86_64 — regerar o peso nesta
+  máquina é impossível;
+- **dependência de orientação**: sem corrigir rotação, 2/13 em material de
+  celular.
+
+### Defeitos abertos — atualização
+
+- **Defeito 3 (orientação de página**, aberto na Fase 4.24) ganha magnitude
+  medida: recall cai de 9/13 para 2/13. Passa a ser **pré-requisito** e é o
+  próximo item do caminho aprovado.
+- **Novo**: o corpus negativo da Fase 4.24 estava contaminado. Corrigido para
+  216 páginas nesta fase, mas **sem varredura página a página** — pode haver
+  mais figura nas 197 restantes do Gil-208.
+- **Novo**: 2 caixas do gabarito da Etapa 0 estão largas o bastante para
+  derrubar IoU abaixo de 0,50 sem culpa do modelo. Não corrigidas de propósito.
+- **Novo**: adotar o detector romperia a referência de regressão de RAM
+  (~300 MB de peak footprint). Sem mitigação testada.
