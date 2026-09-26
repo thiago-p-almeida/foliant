@@ -69,6 +69,28 @@ O sidecar Python (`foliant-core-x86_64-apple-darwin` em
 `scripts/build-sidecar.sh`, que deve rodar antes de `pnpm tauri build`
 em qualquer máquina nova.
 
+### `pnpm tauri build` pode sair com exit code 1 e mesmo assim ter dado certo
+
+Quando `TAURI_SIGNING_PRIVATE_KEY` não está no ambiente, o passo de
+assinatura do updater falha **depois** do empacotamento e o comando
+termina com exit code 1:
+
+```
+A public key has been found, but no private key. Make sure to set
+`TAURI_SIGNING_PRIVATE_KEY` environment variable.
+```
+
+Nesse caso `Foliant.app` e `Foliant_0.2.0_x64.dmg` já saíram íntegros —
+a falha é só na assinatura do pacote de atualização automática.
+
+**Conferir o conteúdo gerado, não o exit code do comando**: timestamp do
+`.app` posterior ao das fontes, e um teste de comportamento no binário
+gerado (rodar o sidecar embutido em
+`Foliant.app/Contents/MacOS/foliant-core`). `strings` no `.app` **não**
+serve para conferir o frontend: ele não enxerga o JS/HTML comprimido, e
+dá zero até para textos de UI que já existiam antes — zero ali não prova
+ausência.
+
 ## Dependências de sistema (OCR/conversão)
 
 Instaladas via micromamba, sem Homebrew:

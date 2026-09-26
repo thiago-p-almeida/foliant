@@ -103,6 +103,50 @@ RENDER_DPI = 200
 TEMPO_OCR_MEDIA_S = 6.08
 TEMPO_OCR_DESVIO_S = 1.96
 
+# Custo do OSD de orientação (Fase 4.26), expresso como RAZÃO sobre o OCR,
+# não em segundos absolutos: cada corrida nesta máquina pega um
+# `CPU_Speed_Limit` diferente (já visto em 45, 77 e 100), e somar segundos de
+# corridas distintas dá número errado — a Fase 4.15 mediu 6,08 s/página de
+# OCR, a investigação de orientação mediu 4,68 s do MESMO OCR.
+#
+# A razão TAMBÉM varia com o throttling, e menos do que se esperaria de "mesmo
+# motor, mesmo pixmap". Dois pontos medidos:
+#   * 2,18 / 4,68 = 0,47  — investigação, medições na mesma corrida;
+#   * +27%, razão 0,275   — A/B intercalado HEAD x NOVO na mesma página, com
+#                           a máquina em CPU_Speed_Limit 77 e load average 8.
+# Fica o valor ALTO do intervalo, de propósito: estimativa é contrato com o
+# usuário, e errar para cima faz a barra terminar antes do previsto. Errar
+# para baixo faz o app parecer travado. Ver ORIENTACAO_PAGINA_2026.md, seção 5.
+#
+# LIMITE DECLARADO: cobre só o OSD, que TODA página escaneada paga. O veto
+# (uma passada extra de OCR a 100 DPI) só roda quando o OSD propõe rotação —
+# 0 vezes em 224 páginas de material alinhado, mas na maioria das páginas de
+# material de celular. A estimativa não tem como saber isso de antemão, então
+# subestima o PDF fotografado torto. Erro para o lado barato: a barra termina
+# antes do previsto, não depois.
+RAZAO_OSD_SOBRE_OCR = 0.47
+
+# Veto de rotação: a proposta do OSD só é aceita se o OCR no ângulo proposto
+# render pelo menos este número de palavras com confiança >= 60.
+#
+# O PISO FOI ESCOLHIDO SOBRE O GABARITO, e isso é uma pendência, não um
+# detalhe: qualquer valor entre 5 e 15 dá o mesmo resultado (15/15 nas tortas,
+# 0/236 de rotação indevida), e 10 é o meio desse platô. O vão entre os dois
+# grupos é grande — as duas páginas que o OSD quis girar à toa rendem 0
+# palavras no ângulo proposto, e a torta mais fraca rende 15 —, mas "platô
+# largo" não é o mesmo que "validado". Precisa de CORPUS DE VALIDAÇÃO
+# SEPARADO antes de ser tratado como constante estável, exatamente a mesma
+# pendência já registrada para o limiar 0,50 do PP-DocLayout-S.
+LIMIAR_VETO_ROTACAO_PALAVRAS = 10
+LIMIAR_VETO_ROTACAO_CONFIANCA = 60
+
+# O veto roda a METADE da resolução de render (200 -> 100 DPI): é decisão
+# medida, não economia improvisada. A 100 DPI a passada custa 2,57 s em vez
+# de 4,68 s e o veto mantém a separação completa entre os dois grupos.
+# (Não confundir com o OSD em si, que a 100 DPI DESMORONA — 7/15 nas tortas
+# e 31 rotações indevidas. O OSD fica a 200 DPI. Ver seção 3.3 do relatório.)
+DIVISOR_VETO_ROTACAO = 2
+
 
 def estimar_tempo_conversao(escaneadas: int) -> tuple[float, float]:
     """Faixa (segundos_min, segundos_max) de tempo estimado de OCR,
@@ -112,9 +156,15 @@ def estimar_tempo_conversao(escaneadas: int) -> tuple[float, float]:
     (não desvio agregado/√n) — mais simples e mais conservador (faixa
     mais larga) que assumir independência estatística entre páginas do
     mesmo livro, o que a amostra da Fase 4.15 não valida (só 1 obra
-    escaneada disponível para medir)."""
-    segundos_min = max(0.0, escaneadas * (TEMPO_OCR_MEDIA_S - TEMPO_OCR_DESVIO_S))
-    segundos_max = escaneadas * (TEMPO_OCR_MEDIA_S + TEMPO_OCR_DESVIO_S)
+    escaneada disponível para medir).
+
+    Desde a Fase 4.26 a média inclui o OSD de orientação, que toda página
+    escaneada paga (`RAZAO_OSD_SOBRE_OCR`). A LARGURA da faixa continua sendo
+    o desvio do OCR sozinho — o desvio do OSD não foi medido, e inventar um
+    número para alargar a faixa seria pior que declarar o limite."""
+    media = TEMPO_OCR_MEDIA_S * (1 + RAZAO_OSD_SOBRE_OCR)
+    segundos_min = max(0.0, escaneadas * (media - TEMPO_OCR_DESVIO_S))
+    segundos_max = escaneadas * (media + TEMPO_OCR_DESVIO_S)
     return segundos_min, segundos_max
 
 
@@ -1103,6 +1153,120 @@ def pagina_em_branco(pagina: "pymupdf.Page", img: "Image.Image") -> bool:
     return img.convert("L").getextrema()[0] >= LIMIAR_PIXEL_ESCURO
 
 
+def _binarizar_otsu(img: "Image.Image") -> "Image.Image":
+    """Binarização por Otsu em PIL puro (sem numpy/OpenCV — o projeto não tem
+    nenhum dos dois e esta fase não é hora de ganhar dependência).
+
+    Existe porque MEDIU-SE que binarizar antes do OSD corta 23% do tempo sem
+    custar um acerto sequer (2,73 s -> 2,11 s por página, mesmos 15/15 e
+    mesmas 2 propostas indevidas). Não é pré-processamento decorativo."""
+    cinza = img.convert("L")
+    h = cinza.histogram()
+    total = sum(h)
+    soma = sum(i * h[i] for i in range(256))
+    soma_b = peso_b = 0.0
+    melhor_var, melhor_t = -1.0, 128
+    for t in range(256):
+        peso_b += h[t]
+        if peso_b == 0:
+            continue
+        peso_f = total - peso_b
+        if peso_f == 0:
+            break
+        soma_b += t * h[t]
+        media_b = soma_b / peso_b
+        media_f = (soma - soma_b) / peso_f
+        var = peso_b * peso_f * (media_b - media_f) ** 2
+        if var > melhor_var:
+            melhor_var, melhor_t = var, t
+    return cinza.point(lambda v: 255 if v > melhor_t else 0, mode="L").convert("RGB")
+
+
+_GIRO_PIL = {
+    90: Image.Transpose.ROTATE_90,
+    180: Image.Transpose.ROTATE_180,
+    270: Image.Transpose.ROTATE_270,
+}
+
+
+def detectar_rotacao(img: "Image.Image", lang: str) -> int:
+    """Quantos graus (anti-horário, convenção do PIL) girar a página para
+    deixá-la em pé. Devolve 0 quando não há o que corrigir OU quando não dá
+    para afirmar com segurança que há.
+
+    A ASSIMETRIA DE CUSTO É O CRITÉRIO, e ela é torta: deixar de corrigir uma
+    página torta é o status quo (nada piora); girar uma página que já estava
+    em pé ESTRAGA uma página boa. Por isso todo caminho de dúvida aqui
+    devolve 0, e por isso o veto existe.
+
+    Duas etapas, medidas em 251 páginas (ver ORIENTACAO_PAGINA_2026.md):
+
+    1. **OSD do Tesseract (`--psm 0`) sobre a página binarizada.** Acerta
+       15/15 nas páginas fotografadas tortas e 60/60 em rotação sintética,
+       mas propõe girar 2 de 236 páginas que já estavam em pé — as duas do
+       mesmo tipo: formato paisagem, quase só tabela, prosa escassa.
+
+    2. **Veto por texto escasso.** A proposta só é aceita se o OCR no ângulo
+       proposto render pelo menos `LIMIAR_VETO_ROTACAO_PALAVRAS` palavras com
+       confiança >= `LIMIAR_VETO_ROTACAO_CONFIANCA`. Nas 2 propostas indevidas
+       isso dá 0 palavras; nas 15 tortas, de 15 a 260. Com o veto: 15/15 e
+       **0/236** (IC95% [0%, 1,6%]).
+
+    NÃO se usa limiar de confiança do OSD, e isso foi testado: a confiança
+    das propostas certas (1,82-19,88) e a das indevidas (0,02 e 2,83) se
+    SOBREPÕEM. Zerar a rotação indevida por confiança custaria 3 das 15
+    tortas — o veto entrega o mesmo 0 sem perder nenhuma.
+
+    Falha do OSD (`Too few characters`, típico de página em branco) devolve
+    0: não gira, não levanta exceção, segue o fluxo normal. Nas 7 páginas em
+    branco com sombra do corpus o OSD falhou nas 7, que é o resultado certo
+    pelo critério que importa."""
+    try:
+        osd = pytesseract.image_to_osd(
+            _binarizar_otsu(img),
+            config=f"--dpi {RENDER_DPI}",
+            output_type=pytesseract.Output.DICT,
+        )
+        # `rotate` do Tesseract é HORÁRIO; o PIL gira anti-horário.
+        graus = (360 - int(osd["rotate"])) % 360
+    except Exception:
+        # Inclui TesseractError ("Too few characters. Skipping this page") —
+        # página sem caractere legível. Não é erro de conversão: é ausência
+        # de sinal, e ausência de sinal não gira nada.
+        return 0
+
+    if graus == 0:
+        return 0
+
+    # Veto: uma passada de OCR a metade da resolução, só no ângulo proposto.
+    # Não são 4 passadas — comparar as 4 orientações foi medido e é 5x mais
+    # caro com acerto PIOR (10/15). Ver seção 4 do relatório.
+    largura, altura = img.size
+    reduzida = img.resize(
+        (largura // DIVISOR_VETO_ROTACAO, altura // DIVISOR_VETO_ROTACAO), Image.LANCZOS
+    )
+    candidata = reduzida.transpose(_GIRO_PIL[graus])
+    try:
+        dados = pytesseract.image_to_data(
+            candidata, lang=lang, output_type=pytesseract.Output.DICT
+        )
+    except Exception:
+        return 0
+    finally:
+        reduzida.close()
+        candidata.close()
+
+    palavras = 0
+    for texto, confianca in zip(dados["text"], dados["conf"]):
+        try:
+            conf = float(confianca)
+        except (TypeError, ValueError):
+            continue
+        if (texto or "").strip() and conf >= LIMIAR_VETO_ROTACAO_CONFIANCA:
+            palavras += 1
+    return graus if palavras >= LIMIAR_VETO_ROTACAO_PALAVRAS else 0
+
+
 def extrair_texto_pagina(
     doc: "pymupdf.Document",
     i: int,
@@ -1129,7 +1293,8 @@ def extrair_texto_pagina(
     Retorna (texto, título detectado ou None, nº de linhas consumidas
     pelo título, lista de "linha é início de parágrafo" alinhada 1:1 com
     texto.splitlines(), página classificada como página-figura, página
-    classificada como em branco).
+    classificada como em branco, graus de rotação aplicados à página antes
+    do OCR — 0 no ramo nativo e em toda página que não precisou girar).
 
     `doc_tem_pagina_nativa` só alimenta `classificar_pagina_figura` (ver
     lá) — é o gate de documento, e vem de `contar_nativas` no chamador.
@@ -1159,16 +1324,37 @@ def extrair_texto_pagina(
         # página com texto nativo tem conteúdo por definição — nunca é
         # candidata a "em branco", e `pagina_em_branco` nem é consultada
         # (ela precisa do pixmap, que este caminho não renderiza).
-        return texto, titulo, n_linhas_titulo, inicio_paragrafo, False, False
+        # rotação 0: o ramo nativo não é tocado por esta fase (ver
+        # `detectar_rotacao` e o defeito aberto do Adobe Scan).
+        return texto, titulo, n_linhas_titulo, inicio_paragrafo, False, False, 0
 
     pixmap = pagina.get_pixmap(matrix=matriz_zoom)
     img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+
+    # Orientação (Fase 4.26) — SOMENTE neste ramo. A página com texto nativo
+    # já retornou acima e nunca chega aqui, de propósito: o defeito conhecido
+    # de camada de texto NATIVA GIRADA (Adobe Scan) NÃO é tratado por esta
+    # fase, está registrado como defeito aberto em ARCHITECTURE.md.
+    #
+    # Roda sobre o pixmap que este ramo JÁ renderizou — nenhum render extra.
+    # O único custo adicional é o do veto, e só quando há proposta de rotação.
+    rotacao = detectar_rotacao(img, lang)
+    if rotacao:
+        girada = img.transpose(_GIRO_PIL[rotacao])
+        img.close()
+        img = girada
+
     dados = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
     # Sobre o MESMO pixmap do OCR, antes de liberá-lo — ver
     # `pagina_em_branco`. O OCR roda mesmo na página em branco: a
     # classificação não gateia nada aqui, só decide a apresentação lá em
     # `construir_html`, e manter o OCR preserva a invariante de nunca
     # descartar texto com base numa classificação de página.
+    # `img` pode ter sido girada acima, e isso NÃO afeta esta classificação:
+    # `pagina_em_branco` decide por `read_contents()`/annots/widgets e, como
+    # última guarda, por `getextrema()[0]` — mínimo de cinza, que é invariante
+    # a rotação de múltiplo de 90° (permutação de pixels, nenhum reamostrado).
+    # O critério de página em branco fica literalmente inalterado.
     branca = pagina_em_branco(pagina, img)
     img.close()
     linhas_ocr = extrair_linhas_ocr(dados)
@@ -1197,9 +1383,9 @@ def extrair_texto_pagina(
         marcador = f"{_MARCADOR_IMG_PREFIXO}{nome}\x00"
         texto = f"{marcador}\n{texto}" if texto else marcador
         inicio_paragrafo = [True] + inicio_paragrafo
-        return texto, titulo, n_linhas_titulo, inicio_paragrafo, True, branca
+        return texto, titulo, n_linhas_titulo, inicio_paragrafo, True, branca, rotacao
 
-    return texto, titulo, n_linhas_titulo, inicio_paragrafo, False, branca
+    return texto, titulo, n_linhas_titulo, inicio_paragrafo, False, branca, rotacao
 
 
 def agrupar_cabecalhos(contador: Counter, total_paginas: int) -> set[str]:
@@ -1403,14 +1589,17 @@ def pagina0_e_duplicata_de_metadados(texto_pagina0: str, titulo_meta: str, autor
     return len(residual) <= 15
 
 
-def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[str], Path | None, int]:
+def primeira_passada(
+    pdf_path: Path, cache_path: Path, lang: str
+) -> tuple[set[str], Path | None, int, list[list[int]]]:
     """Passo 1/2: percorre o PDF uma única vez (render+OCR por página),
     grava o texto bruto de cada página em cache_path (uma linha JSON por
     página — streaming, nunca acumula texto de todas as páginas em RAM),
     identifica as linhas iniciais repetidas (cabeçalho de seção) e detecta
     o título de capítulo de cada página, se houver. Também tenta extrair
     a capa real da 1ª página (ver `extrair_capa`) — retorna
-    (cabeçalhos, caminho da capa extraída ou None, total de páginas).
+    (cabeçalhos, caminho da capa extraída ou None, total de páginas,
+    lista de [nº da página, graus girados] das páginas endireitadas).
 
     O título detectado de uma página CONTINUA contando na análise de
     frequência de cabeçalho abaixo (não é excluído do texto usado para
@@ -1424,6 +1613,12 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
     total = doc.page_count
     matriz_zoom = pymupdf.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
     contador: Counter = Counter()
+    # (nº da página, graus girados) — alimenta a linha ROTACAO: no `main`.
+    # Diferente de FIGURAS:/BRANCO:/CAPA:, que `construir_html` monta a partir
+    # do cache: rotação é fato do passo 1 e não influencia nada no passo 2,
+    # então sobe por aqui em vez de atravessar o cache e alargar o retorno de
+    # `construir_html` — menos superfície tocada, mesma linha de log.
+    paginas_giradas: list[list[int]] = []
 
     # Passagem rápida e independente da que segue (get_text só lê a
     # camada de texto do PDF, sem renderizar nem chamar Tesseract — custo
@@ -1449,7 +1644,8 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
             # propósito, ver lá. Reusa a contagem já feita acima, sem
             # nenhuma varredura extra do PDF.
             (
-                texto, titulo, n_linhas_titulo, inicio_paragrafo, pagina_figura, pagina_branca
+                texto, titulo, n_linhas_titulo, inicio_paragrafo, pagina_figura,
+                pagina_branca, rotacao
             ) = extrair_texto_pagina(
                 doc, i, matriz_zoom, lang, cache_path.parent, doc_tem_pagina_nativa=nativas > 0
             )
@@ -1473,6 +1669,9 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
                 # nem anunciada na telemetria: não sobrou imagem alguma
                 # no fluxo desta página.
                 pagina_figura = False
+
+            if rotacao:
+                paginas_giradas.append([i + 1, rotacao])
 
             registro = {
                 "texto": texto,
@@ -1547,7 +1746,7 @@ def primeira_passada(pdf_path: Path, cache_path: Path, lang: str) -> tuple[set[s
 
     doc.close()
 
-    return agrupar_cabecalhos(contador, total), capa_path, total
+    return agrupar_cabecalhos(contador, total), capa_path, total, paginas_giradas
 
 
 def unir_linhas_em_paragrafos(linhas: list[str], inicio_paragrafo: list[bool]) -> list[str]:
@@ -1943,7 +2142,9 @@ def main() -> None:
             cache_path = tmp_dir / "paginas.jsonl"
 
             try:
-                cabecalhos, capa_path, total = primeira_passada(args.pdf_entrada, cache_path, lang=args.lang)
+                cabecalhos, capa_path, total, paginas_giradas = primeira_passada(
+                    args.pdf_entrada, cache_path, lang=args.lang
+                )
             except ValueError as erro:
                 # Estrutura do PDF corrompida além do que --inspect detecta:
                 # xref/streams truncados fazem pymupdf.open() aceitar o
@@ -2028,6 +2229,23 @@ def main() -> None:
             # soma do gate acima.
             if paginas_capa:
                 print(f"CAPA:{json.dumps({'paginas_capa': paginas_capa})}")
+
+            # ROTACAO: quarta linha informativa de sucesso, mesma lógica do
+            # trio acima — a página foi convertida CORRETAMENTE, e melhor do
+            # que seria sem a correção. Emitida SEMPRE que houver ao menos
+            # uma página girada, nunca condicionada a o número surpreender.
+            #
+            # Aqui a observabilidade vale ainda mais que nas outras três,
+            # porque o erro possível é CARO e silencioso: girar uma página
+            # que já estava em pé estraga uma página boa, e o resultado
+            # disso é texto ilegível entregue como sucesso — indistinguível,
+            # do lado do usuário, de um OCR ruim. Esta linha é o único lugar
+            # em que quem tem o PDF na mão consegue conferir a decisão.
+            # Medição: 0 rotações indevidas em 236 páginas em pé, mas o
+            # intervalo de Wilson vai até 1,6% e o piso do veto ainda não
+            # passou por corpus de validação separado.
+            if paginas_giradas:
+                print(f"ROTACAO:{json.dumps({'paginas_giradas': paginas_giradas})}")
     except KeyboardInterrupt:
         # Propagada pelo handler de SIGTERM acima (ou por Ctrl+C manual, uso
         # normal em terminal) — o `with` já rodou __exit__ e removeu o

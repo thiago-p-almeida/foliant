@@ -3578,3 +3578,70 @@ primeira):
   mas **não regenerável nesta máquina** (paddle2onnx sem binário x86_64).
 - N=16 e N=15 dão IC de ~40 pontos. O Portão 1 não se resolve com medição
   melhor, e sim com corpus maior.
+
+## Fase 4.26 — correção de orientação de página no ramo OCR (2026-09-25/26)
+
+**Pedido**: sondar um PDF exportado pelo app de celular do usuário e, se o
+desenho aprovado o cobrisse, implementar a correção de orientação medida na
+investigação (`ORIENTACAO_PAGINA_2026.md`).
+
+**Critério de validação fixado antes**: a métrica que decide é **rotação
+indevida em página já em pé** — deixar de corrigir uma torta é status quo,
+girar uma boa estraga uma boa.
+
+### Parte 1 — sondagem: caso fora do alcance, escopo NÃO alargado
+
+`corpus_local/sondagem_app/sondagem_rotate_app.pdf`, **Adobe Scan for
+Android**. Fechou a pendência "PDF de app de celular não testado", e a
+resposta foi uma **terceira** hipótese: nem `/Rotate` (= 0), nem só pixel —
+**camada de texto própria, 1881 caracteres, 72 de 72 linhas com
+`dir = (0,-1)`**. A página vai pelo ramo nativo, nunca chega ao OSD, e sai
+como sucesso com o texto fora de ordem.
+
+Parei e reportei em vez de alargar o escopo sozinho. Decisão do usuário:
+seguir a Parte 2 como aprovada e registrar o caso como defeito aberto, com
+investigação curta pendente (3 pontos, em ARCHITECTURE). ✔
+
+### Parte 2 — implementação
+
+1. **`detectar_rotacao` no ramo OCR**, sobre o pixmap a 200 DPI já
+   renderizado. OSD binarizado por Otsu propõe; veto de ≥ 10 palavras com
+   confiança ≥ 60 a 100 DPI decide; falha do OSD não gira. ✔
+2. **Validação com a função de produção** (`scripts/validar_orientacao.py`,
+   chama `foliant.detectar_rotacao`, não reimplementa): **15/15** tortas,
+   **0/236** rotações indevidas. ✔
+3. **Regressão contra HEAD**: FDE, PEREIRA, brancas com sombra, fixture de
+   ruído e `ressalva_parcial` — **HTML idêntico (sha)**, nenhuma página
+   girada. Gil-208: `<h2>` e os 110 clusters de cabeçalho idênticos, `<p>`
+   1205 → 1216 numa única página. ✔ (ver ressalva abaixo)
+4. **Memória**: pico de 145 MiB contra a referência de ~300 MB. ✔
+5. **DPI**: varrido; 150 DPI cai para 13/15 com 2 indevidas, 100 DPI para
+   7/15 com 31. Mantido 200 DPI. ✔
+6. **Protocolo de build** completo antes da validação manual. ✔
+
+### Critério de validação flexibilizado — decisão, não descuido
+
+O critério pedido incluía "contagem de `<p>` idêntica ao HEAD no Gil-208", e
+ele **não** foi cumprido: 1205 → 1216. Os 11 parágrafos vêm todos da página
+179 (o Gantt girado), onde o texto passou de 212 para 775 caracteres e de
+ruído para rótulos legíveis.
+
+O usuário decidiu que **o critério estava mal formulado** — pressupunha que
+toda mudança de contagem seria regressão — e o relaxou explicitamente,
+classificando os +11 `<p>` como **conteúdo recuperado**. Registrado aqui para
+o histórico não ler isso como critério descumprido por descuido.
+
+### Risco residual declarado
+
+A página 179 **estava excluída do controle negativo do Portão 1**
+(`i not in (0, 178)`), então os 0/236 **não cobriam** a classe "conteúdo
+impresso girado em página com prosa em pé". Foi a varredura do livro inteiro
+que a encontrou. O veto não protege essa classe: ele conta palavras no ângulo
+proposto, e conteúdo girado rende palavras de sobra. Na 179 o saldo é
+positivo porque a prosa em pé era uma linha só; numa página meio a meio seria
+negativo. **Uma amostra não é uma classe.**
+
+**Não feito**: ramo nativo intocado; camada de texto girada segue como
+defeito aberto; piso de 10 do veto pendente de corpus de validação separado,
+mesma pendência do limiar 0,50 do PP-DocLayout-S.
+

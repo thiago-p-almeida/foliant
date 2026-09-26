@@ -524,6 +524,19 @@ function processarLinha(linha, estadoLinhas) {
     log(linha);
     return;
   }
+  // ROTACAO: (ver foliant.py, main) — páginas que estavam de lado no PDF
+  // e foram endireitadas antes do OCR. Mesmo tratamento de
+  // FIGURAS:/BRANCO:/CAPA: não é ressalva (a página foi convertida, e
+  // melhor do que seria sem a correção) e nunca muda o estado final.
+  if (linha.startsWith("ROTACAO:")) {
+    try {
+      estadoLinhas.rotacao = JSON.parse(linha.slice("ROTACAO:".length));
+    } catch {
+      /* mal-formada: segue sem o detalhe, log bruto abaixo */
+    }
+    log(linha);
+    return;
+  }
   // ANALISE: (emitido pelo pipeline real, ver foliant.py) não tem mais
   // UI própria em "convertendo" — a contagem nativas/escaneadas já foi
   // mostrada em "antes de converter" via --inspect. Cai no log bruto
@@ -541,7 +554,7 @@ async function aoClicarCancelar() {
   if (!havia) log("Nada para cancelar (nenhuma conversão em andamento).");
 }
 
-async function finalizarConversaoComSucesso(ressalva, figuras, branco, capa) {
+async function finalizarConversaoComSucesso(ressalva, figuras, branco, capa, rotacao) {
   await invoke("registrar_epub_gerado", { caminho: sessao.saida });
   const paginas = ressalva?.paginas_sem_texto;
   // `paginasFigura`, `paginasBranco` e `paginasCapa` viajam para os DOIS
@@ -551,10 +564,15 @@ async function finalizarConversaoComSucesso(ressalva, figuras, branco, capa) {
   const paginasFigura = figuras?.paginas_figura || [];
   const paginasBranco = branco?.paginas_branco || [];
   const paginasCapa = capa?.paginas_capa || [];
+  // [nº da página, graus] — só o nº vai para a tela; o ângulo fica no log,
+  // que é onde quem for conferir contra o PDF precisa dele.
+  const paginasGiradas = (rotacao?.paginas_giradas || []).map(([pagina]) => pagina);
   if (paginas && paginas.length > 0) {
-    transicionarPara("com_ressalva", { paginasSemTexto: paginas, paginasFigura, paginasBranco, paginasCapa });
+    transicionarPara("com_ressalva", {
+      paginasSemTexto: paginas, paginasFigura, paginasBranco, paginasCapa, paginasGiradas,
+    });
   } else {
-    transicionarPara("pronto", { paginasFigura, paginasBranco, paginasCapa });
+    transicionarPara("pronto", { paginasFigura, paginasBranco, paginasCapa, paginasGiradas });
   }
 }
 
@@ -600,6 +618,7 @@ async function iniciarConversao() {
           estadoLinhas.figuras,
           estadoLinhas.branco,
           estadoLinhas.capa,
+          estadoLinhas.rotacao,
         );
       } else {
         log(`Processo finalizado com erro (código ${dados.code}).`);
@@ -741,6 +760,7 @@ function renderizarPronto(dados = {}) {
   renderizarFiguras(dados.paginasFigura);
   renderizarBranco(dados.paginasBranco);
   renderizarCapa(dados.paginasCapa);
+  renderizarRotacao(dados.paginasGiradas);
   popularLogTemplate();
   ligarSegmentadoDispositivo();
   telaEl.querySelector("#btn-reiniciar").addEventListener("click", () => irParaSelecionar());
@@ -832,6 +852,33 @@ function renderizarCapa(paginasCapa = []) {
 // `visivel` explicitamente. Sem essa separação, a alternativa seria ou
 // um segundo renderizador quase idêntico, ou um botão "Ver a lista de
 // páginas" revelando um item só.
+// Linha informativa de página endireitada, mesmas duas telas e mesmo tom
+// das outras três: `info` (azul de marca), ícone `info`, nada de âmbar.
+// É fato de SUCESSO — a página estava de lado no PDF e foi corrigida antes
+// do OCR, então o texto dela saiu legível em vez de virar ruído.
+//
+// Texto neutro de propósito: não elogia a correção nem sugere que o usuário
+// fez algo errado ao fotografar. Só diz o que aconteceu.
+//
+// Aparece SEMPRE que houver ao menos uma página girada, e aqui isso pesa
+// mais que nos outros três blocos, porque o erro possível é o CARO: girar
+// uma página que já estava em pé produz texto ilegível entregue como
+// sucesso. A lista de páginas é a única forma de quem tem o PDF na mão
+// perceber. Medido: 0 rotações indevidas em 236 páginas em pé, com o piso
+// do veto ainda pendente de corpus de validação separado
+// (ver ORIENTACAO_PAGINA_2026.md).
+function renderizarRotacao(paginasGiradas = []) {
+  const n = paginasGiradas.length;
+  renderizarBlocoDePaginas("#rotacao-info", {
+    titulo: "Páginas endireitadas",
+    texto:
+      n === 1
+        ? "1 página estava de lado e foi endireitada antes da leitura."
+        : `${n} páginas estavam de lado e foram endireitadas antes da leitura.`,
+    paginas: paginasGiradas,
+  });
+}
+
 function renderizarBlocoDePaginas(seletor, { titulo, texto, paginas, visivel }) {
   const containerEl = telaEl.querySelector(seletor);
   if (!containerEl) return;
@@ -916,6 +963,7 @@ function renderizarComRessalva(dados = {}) {
   renderizarFiguras(dados.paginasFigura);
   renderizarBranco(dados.paginasBranco);
   renderizarCapa(dados.paginasCapa);
+  renderizarRotacao(dados.paginasGiradas);
   popularLogTemplate();
   ligarSegmentadoDispositivo();
   telaEl.querySelector("#btn-reiniciar").addEventListener("click", () => irParaSelecionar());

@@ -2729,3 +2729,83 @@ causa dessa marcação que a Etapa 1 inspecionou antes de contar.
 
 O texto do 18º episódio **não** foi reescrito, conforme a regra do projeto: a
 correção mora aqui.
+
+## Vigésimo sexto episódio — o app de celular não gira o pixel, gira o texto
+
+A investigação de orientação tinha deixado uma pergunta aberta por falta de
+amostra: quando a entrada é um PDF exportado por app de celular, a rotação
+vem em `/Rotate` (e o PyMuPDF já resolve) ou assada em pixel (e exige
+detecção)? Eu havia escrito no relatório que era pendência barata de fechar —
+"basta uma página exportada pelo app". O Thiago exportou uma pelo **Adobe
+Scan for Android**, e a resposta foi: **nenhuma das duas**.
+
+O que o Adobe Scan entrega para uma página fotografada de lado: `/Rotate = 0`,
+JPEG embutido 3672×2416 (paisagem, pixels tortos), mediabox paisagem — e
+**uma camada de texto própria, de 1881 caracteres**, com as **72 linhas**
+marcadas `dir = (0,-1)`. Ele rodou o próprio OCR, acertou os glifos, e gravou
+o resultado **escrito girado** numa página paisagem, sem declarar rotação
+nenhuma.
+
+O estrago é que isso desvia exatamente do caminho que eu acabara de
+instrumentar. `extrair_texto_pagina` vê texto nativo, entra no ramo nativo,
+**nunca renderiza pixmap e nunca chega ao OSD**. Rodei a função de produção
+nessa página: o texto sai fora de ordem de leitura (`'FENÔMENOS' / 'O
+planejamento do estudo' / 'INIBIDORES' / 'Capítulo' / '1.'`), o título
+detectado é uma linha girada, e `pagina_em_branco` e
+`classificar_pagina_figura` devolvem False — ou seja, **sai como sucesso**,
+sem ressalva. É a mesma página física que, entregue como JPG, o OSD endireita
+com confiança 13,39 e veto de 176 palavras.
+
+Testei o conserto óbvio e ele não existe: `page.set_rotation()` nos quatro
+valores **não muda** nem o `dir` das linhas nem a ordem de leitura.
+
+**A lição é sobre o que uma pergunta "em aberto" custa.** A pendência era
+barata mesmo: uma página, dez minutos. E a resposta não confirmou nenhuma das
+duas hipóteses que eu tinha escrito — inventou uma terceira, que teria
+passado despercebida até um usuário reclamar de livro embaralhado. Fechar a
+pendência barata **antes** de implementar não mudou o código: mudou a
+honestidade do que ele promete.
+
+## Vigésimo sétimo episódio — o gabarito tinha excluído justamente a página que faltava testar
+
+A Fase 4.26 fechou com número bonito: 15/15 nas páginas tortas, **0 rotação
+indevida em 236** páginas já em pé, medido com a função de produção. Aí rodei
+o pipeline no Gil-208 inteiro, comparando o HTML contra o HEAD, e **uma**
+página divergiu — a 179.
+
+A 179 é o cronograma de Gantt do 17º episódio: impresso girado 90°, ocupando
+~90% da página. E o motivo de ela não aparecer nos 236 é constrangedor de tão
+simples: **o controle negativo do Portão 1 a excluía por construção**
+(`i not in (0, 178)`), porque era página-figura conhecida. O gabarito herdou
+essa exclusão. Os 0/236 eram verdadeiros e **não cobriam essa classe** —
+descobri isso pela varredura do livro inteiro, não pela medição que eu tinha
+desenhado para decidir.
+
+O resultado, nessa página, foi **bom**: o texto passou de 212 para 775
+caracteres e de ruído (`'“esinbsed eun op eueIBouols [1:07 eunbia |'`, que é
+"Figura 20.1: Cronograma de uma pesquisa" ao contrário) para rótulos legíveis
+do cronograma. O cabeçalho corrente, única linha em pé, virou ilegível em
+troca. Saldo claramente positivo, e foi por isso que o Thiago aceitou — e
+aproveitou para relaxar, explicitamente, o critério de validação que ele
+mesmo tinha escrito ("`<p>` idêntico ao HEAD"), porque ele pressupunha que
+toda mudança de contagem seria regressão. Os 11 parágrafos a mais são
+conteúdo recuperado.
+
+**O que não pode ser lido como vitória**: o veto **não protege** essa classe,
+e é útil entender por quê. Ele conta palavras de confiança alta **no ângulo
+proposto**, e conteúdo girado rende palavras de sobra justamente quando é
+girado de volta. Ele foi desenhado contra o caso oposto — página em pé sem
+texto legível em ângulo nenhum — e ali funciona. Na 179 o saldo deu positivo
+porque a prosa em pé era **uma linha só**; numa página meio a meio seria
+negativo, texto bom trocado por texto ruim. **Uma amostra não é uma classe**,
+e o corpus não tem outra.
+
+**A lição de método é a segunda deste tipo em duas rodadas.** Na
+investigação, o gabarito tinha sido semeado pelo próprio OSD, e trazer de
+volta as 6 páginas descartadas foi o que revelou as 2 únicas rotações
+indevidas. Agora, o gabarito tinha **excluído** a página-figura, e rodar o
+livro inteiro foi o que revelou a classe que faltava. As duas vezes o
+problema não estava na medição: estava em **o que o corpus tinha deixado de
+fora**, por um motivo que na época parecia bom. Corpus de teste herda as
+exclusões de quem o montou, e essas exclusões não se anunciam.
+

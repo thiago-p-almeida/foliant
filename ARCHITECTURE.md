@@ -4206,3 +4206,145 @@ com o estado atual. A decisão futura deve pesar **ganho × custo**:
   derrubar IoU abaixo de 0,50 sem culpa do modelo. Não corrigidas de propósito.
 - **Novo**: adotar o detector romperia a referência de regressão de RAM
   (~300 MB de peak footprint). Sem mitigação testada.
+
+## Fase 4.26 — correção de orientação de página no ramo OCR
+
+Implementa o caminho recomendado por `ORIENTACAO_PAGINA_2026.md`.
+`detectar_rotacao` roda **só no ramo OCR**, sobre o pixmap a 200 DPI que
+`extrair_texto_pagina` já renderiza — nenhum render extra.
+
+- **OSD do Tesseract (`--psm 0`) sobre a página binarizada por Otsu**
+  (`_binarizar_otsu`, PIL puro, sem dependência nova). Binarizar corta 23% do
+  tempo sem custar acerto.
+- **Veto por texto escasso**: a proposta só é aceita se o OCR a 100 DPI no
+  ângulo proposto render ≥ `LIMIAR_VETO_ROTACAO_PALAVRAS` (10) palavras com
+  confiança ≥ 60. Uma passada extra, e só quando há proposta.
+- **Falha do OSD ⇒ não gira**, sem exceção e sem erro.
+- **Não** há limiar de confiança do OSD: as confianças das propostas certas
+  (1,82–19,88) e das indevidas (0,02 e 2,83) se sobrepõem.
+
+`pagina_em_branco` recebe a imagem possivelmente girada, e o critério fica
+inalterado: ela decide por `read_contents()`/annots/widgets e, como última
+guarda, por `getextrema()[0]` — mínimo de cinza, invariante a rotação de
+múltiplo de 90°.
+
+### Medição com a função de produção
+
+`scripts/validar_orientacao.py` chama `foliant.detectar_rotacao`, não uma
+reimplementação: **15/15** páginas tortas endireitadas, **0 rotação indevida
+em 236** páginas já em pé.
+
+| corpus | páginas | giradas | HTML vs HEAD |
+|---|---|---|---|
+| FDE | 210 | 0 | idêntico (sha) |
+| PEREIRA | 903 | 0 | idêntico |
+| brancas com sombra | 7 | 0 | idêntico |
+| fixture de ruído | 3 | 0 | idêntico |
+| `ressalva_parcial` | 4 | 0 | idêntico |
+| Gil-208 | 208 | **1** (pág. 179, 270°) | `<p>` 1205 → **1216** |
+
+**Memória**: pico de **145 MiB**, contra a referência de ~300 MB. A página
+girada foi a mais barata das medidas (114 MiB) — a rotação cria uma segunda
+imagem antes de liberar a primeira, e isso não aparece no pico.
+
+**DPI**: varrido e mantido em 200. A 150 DPI o OSD cai para 13/15 com 2
+rotações indevidas; a 100 DPI, para 7/15 com 31. 200 DPI é também o que o
+pipeline já renderiza, então o OSD não custa render.
+
+**Estimativa de tempo**: `RAZAO_OSD_SOBRE_OCR = 0.47`, somada à média por
+página escaneada. Expressa como razão, não em segundos, porque cada corrida
+nesta máquina pega um `CPU_Speed_Limit` diferente. A razão medida variou
+entre 0,275 (A/B intercalado sob throttling) e 0,47 (investigação, mesma
+corrida); fica o valor alto de propósito, porque errar a estimativa para
+cima faz a barra terminar antes, e para baixo faz o app parecer travado.
+
+**Observabilidade**: linha `ROTACAO:` (quarta do conjunto
+`FIGURAS:`/`BRANCO:`/`CAPA:`) e bloco `callout-info` "Páginas endireitadas"
+nas duas telas de conclusão, com a lista de páginas. A lista importa mais
+aqui do que nos outros três blocos, porque o erro possível é o caro.
+
+### O critério de validação que foi flexibilizado, e por quê
+
+O critério pedido era "contagem de `<p>`, `<h2>` e clusters de cabeçalho
+**idênticos ao HEAD** no Gil-208". `<h2>` (26) e clusters (110, lista
+idêntica) bateram; `<p>` **não**: 1205 → 1216.
+
+Os 11 parágrafos a mais são de uma única página, a 179, e são **conteúdo
+recuperado, não regressão**. O texto dela passou de 212 para 775 caracteres
+e de ruído (`'“esinbsed eun op eueIBouols [1:07 eunbia |'`, que é "Figura
+20.1: Cronograma de uma pesquisa" lido ao contrário) para rótulos legíveis
+do cronograma (`'Especificação ds objetivos'`, `'Elaboração d
+questionário'`). O cabeçalho corrente, única linha em pé da página, virou
+ilegível em troca.
+
+O critério foi **decidido como mal formulado e relaxado pelo Thiago**, com o
+motivo registrado: ele pressupunha que toda mudança de contagem seria
+regressão. Fica escrito aqui para o histórico registrar **decisão, não
+descuido**.
+
+### Risco residual: conteúdo impresso girado em página com prosa em pé
+
+A página 179 do Gil-208 é o cronograma de Gantt do 17º episódio — impresso
+girado 90°, ocupando ~90% da página. **Ela estava excluída do controle
+negativo do Portão 1** (`i not in (0, 178)`, por ser página-figura conhecida),
+então os **0/236 nunca cobriram essa classe**. Foi a varredura do livro
+inteiro, no pipeline real, que a encontrou — não o gabarito.
+
+**O veto não protege este caso**, e é importante entender por quê: ele conta
+palavras com confiança alta **no ângulo proposto**, e conteúdo girado rende
+palavras de sobra justamente quando é girado de volta. O veto foi desenhado
+contra o caso oposto (página em pé, sem texto legível em ângulo nenhum), e
+ali funciona.
+
+Na 179 o saldo é positivo porque a prosa em pé era **uma linha só**. Numa
+página meio a meio — metade figura girada, metade prosa em pé — o saldo seria
+**negativo**: texto bom trocado por texto ruim. **Uma amostra não é uma
+classe**, e o corpus não tem outra. Fica declarado como risco aberto, sem
+mitigação testada.
+
+### Defeito aberto novo: camada de texto nativa girada (PDF de app de celular)
+
+`extrair_texto_pagina` entra no ramo nativo sempre que a página tem texto, e
+o ramo nativo **não** olha a direção de escrita das linhas.
+
+Evidência, de `corpus_local/sondagem_app/sondagem_rotate_app.pdf`, exportado
+pelo **Adobe Scan for Android 26.09.03** a partir de uma página fotografada
+de lado:
+
+| | |
+|---|---|
+| `/Rotate` | **0** |
+| JPEG embutido | 3672×2416 — paisagem, pixels tortos |
+| camada de texto | **1881 caracteres**, OCR do próprio app |
+| direção das linhas | **72 de 72 com `dir = (0,-1)`** — texto escrito girado |
+
+Rodando a função de produção nessa página: o texto sai **fora de ordem de
+leitura**, o título detectado é uma linha girada, e `pagina_em_branco` e
+`classificar_pagina_figura` devolvem False — a página **sai como sucesso**,
+sem ressalva.
+
+A Fase 4.26 **não alcança este caso por construção**: a página nunca chega a
+renderizar pixmap. `page.set_rotation()` não resolve (testado nos quatro
+valores: nem `dir` nem a ordem de leitura mudam). Corrigir exigiria reordenar
+por direção de escrita dentro de `extrair_linhas_nativas`.
+
+**Investigação curta pendente, antes de qualquer implementação**: (1) quantas
+páginas do FDE e do PEREIRA têm maioria de linhas com `dir != (1,0)` — é o
+risco de mandar texto nativo bom para o OCR; (2) comparar a qualidade do
+texto nativo do Adobe Scan com o OCR do Tesseract nessa página; (3)
+viabilidade de manter o texto nativo e só reordená-lo pela direção das
+linhas, sem OCR extra.
+
+### Defeitos abertos — atualização após a Fase 4.26
+
+1. Imagem extraída com fundo preto (SMask não aplicado) — Fase 4.14.
+2. Texto de lixo não distinguido de texto bom — 19º episódio, Fase 4.15.
+   A Fase 4.26 **não** fecha este: ela corrige a causa mais comum de lixo
+   (página torta) no ramo OCR, mas o gate `if paragrafos:` continua sem
+   saber separar texto de ruído.
+3. **Orientação de página — PARCIALMENTE FECHADO.** Ramo OCR corrigido
+   nesta fase. Continua aberto no ramo nativo (defeito novo acima).
+4. **Novo**: conteúdo impresso girado em página com prosa em pé (acima).
+5. PP-DocLayout-S: decisão em aberto. Com orientação corrigida, o recall
+   local sai de 3/15 (20,0%) para 10/15 (66,7%) — ainda abaixo da meta.
+
