@@ -379,6 +379,17 @@ funciona — e, como o OSD do Tesseract já se mostrou inconfiável (confiança
 0,55–33,5, errando um caso), **corrigir orientação é pré-requisito**, não
 melhoria opcional.
 
+> **⚠ Correção (2026-09-25)**: a premissa "o OSD do Tesseract já se mostrou
+> inconfiável (confiança 0,55–33,5, errando um caso)" **caiu**. O caso —
+> `463802` — não era erro: a página está em pé, é formato paisagem. Medido
+> contra gabarito de 251 páginas, o OSD faz **15/15** em foto de celular e
+> **2 propostas indevidas em 236** páginas em pé, ambas eliminadas por um
+> veto barato → **15/15 e 0/236**. A conclusão "corrigir orientação é
+> pré-requisito" **continua valendo**; o que muda é que o pré-requisito tem
+> solução medida, sem dependência nova. Com orientação corrigida, o recall
+> local sai de **3/15 (20,0 %)** em material cru para os **10/15 (66,7 %)**
+> já reportados aqui. Ver `ORIENTACAO_PAGINA_2026.md`.
+
 ### Sanidade: página-figura inteira (Fase 4.21)
 
 | caso | resultado |

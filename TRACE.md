@@ -2586,6 +2586,48 @@ foi ele que mostrou que a primeira coisa que quebra não é a detecção de
 figura, é a orientação da página. Vale para a próxima decisão de onde
 investir: o corpus que parece pior é o que informa mais.
 
+
+> ### ⚠ Correção (2026-09-25) — ver `ORIENTACAO_PAGINA_2026.md`
+>
+> Três afirmações desta seção foram derrubadas por medição. O texto acima
+> fica **como estava**, para o registro; o que vale é o que segue.
+>
+> **1. O OSD não errou a página `463802`.** A página **está em pé**. É uma
+> TABELA 1 de relatório em formato **paisagem**, fotografada direito:
+> cabeçalho corrente, título e rótulos de linha leem-se todos na horizontal
+> (conferido em resolução plena). O que enganou foram os cabeçalhos de
+> coluna, impressos girados 90° — tipografia de tabela estreita, não rotação
+> de página. Confundiu-se *formato paisagem* com *página deitada*. O
+> `rotate=0` do OSD estava **certo**, e a confiança 1,42 estava certa em ser
+> baixa.
+>
+> **Nada no corpus precisou ser corrigido**: `463802` está só em
+> `descartadas`, **sem** campo `rotacao_aplicada_graus`, **sem** caixa
+> anotada e **fora** dos três PDFs. Nenhuma rotação chegou a ser aplicada a
+> ela, e o PP-DocLayout-S nunca a mediu. **Os números do Portão 1 não mudam.**
+>
+> **2. "O OSD não serve para correção automática" não se sustenta.** Medido
+> contra gabarito de 251 páginas: **15/15** em foto de celular, **60/60** em
+> rotação sintética, e **2 propostas indevidas em 236** páginas já em pé —
+> as duas vetáveis por um sinal simples (o OCR no ângulo proposto devolve 0
+> palavras com confiança ≥ 60; nas tortas, de 15 a 260). Com o veto:
+> **15/15 e 0/236**, IC95% [0 %, 1,6 %]. O OSD é confiável **para propor**;
+> o que faltava era guarda para não estragar página boa.
+>
+> **3. "Acervo digitalizado sai alinhado" está errado.** **104 das 208
+> páginas do Gil-208 têm `/Rotate 180`.** Elas aparecem em pé porque o
+> PyMuPDF **aplica** o `/Rotate` ao renderizar — confirmado por experimento.
+> A diferença entre os dois corpora nunca foi scanner bom contra celular
+> ruim: é **rotação declarada em metadado contra rotação assada em pixel**.
+> O JPG de celular não traz nem EXIF válido (as 27 imagens têm
+> `Orientation` = 0 ou 524288, fora da faixa válida 1–8).
+>
+> **Contagem reconciliada**: o "12 de 20" continua correto para o escopo em
+> que foi feito — 11 positivas tortas + 1 negativa_extra, de 13 positivas +
+> 1 negativa_extra + 6 descartadas. As **7 descartadas nunca tiveram rotação
+> registrada** (campo ausente), e 3 delas estão tortas (90°). Por isso a
+> investigação de orientação mede **15** tortas: as 12 da Etapa 0 mais essas 3.
+
 ## Vigésimo quinto episódio — o modelo achou tudo que o corpus negativo escondia, e o limiar cortou as caixas certas
 
 A Etapa 1 tinha um bloqueio previsto e um imprevisto. O previsto — "será que

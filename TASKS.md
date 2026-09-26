@@ -3467,6 +3467,14 @@ ao Portão 1 — sem versionar nada desse material.
    visualmente uma a uma** — confiança entre 0,55 e 33,5, e o OSD errou em
    `463802` (confiança 1,42). Registrada em campo próprio
    (`rotacao_aplicada_graus`), não descartada. ✔
+
+> **⚠ Correção (2026-09-25)**: "o OSD errou pelo menos uma vez" está errado —
+> a página `463802` **está em pé** (tabela em formato paisagem, fotografada
+> direito); o `rotate=0` do OSD estava certo. Nenhuma rotação foi aplicada a
+> ela (está em `descartadas`, sem campo de rotação, sem caixa, fora dos PDFs),
+> logo **os números do Portão 1 não mudam**. Medido depois: OSD 15/15 em foto
+> de celular e 2 propostas indevidas em 236 páginas em pé, ambas vetáveis.
+> Ver `ORIENTACAO_PAGINA_2026.md`.
 4. **PDFs sem camada de texto**: `get_text("text")` = 0 caracteres nos três
    arquivos gerados (13 positivas, 7 brancas, 1 negativa). ✔
 5. **Anotação**: 15 objetos nas 13 positivas, mesma estrutura do corpus
