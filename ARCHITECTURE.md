@@ -4335,6 +4335,72 @@ texto nativo do Adobe Scan com o OCR do Tesseract nessa página; (3)
 viabilidade de manter o texto nativo e só reordená-lo pela direção das
 linhas, sem OCR extra.
 
+### Teste manual no app instalado — quatro achados fora do corpus de calibração
+
+Relatório completo em `RELATORIO_TESTE_MANUAL_2026.md`. Teste feito
+direto no `Foliant.app` instalado, em três arquivos fora do corpus de
+calibração (FDE, PEREIRA): `sondagem_rotate_app.pdf`, um currículo de 2
+páginas gerado por LaTeX, e um livro de 211 páginas (Kechi Hirama,
+"Engenharia de Software").
+
+**Reconciliação de um relato aparentemente contraditório**: o `.epub` da
+sondagem gerado pela interface gráfica (`Documents/sondagem_rotate_app.epub`)
+foi comparado byte a byte com o gerado por linha de comando durante a
+investigação da Fase 4.26 — o HTML interno é **idêntico** (mesmas 37 tags
+`<p>`, mesma ordem, mesmo parágrafo com "FACILIDADES... DEFLAGRADORES...
+DIFICULDADES..." colado). Não há divergência de comportamento entre GUI e
+CLI. A diferença de leitura relatada (texto "diluído, quase estruturado"
+via Apple Books vs. "fora de ordem" via inspeção de markup) vem do
+parágrafo problemático atravessar uma virada de página no leitor — a
+colagem dos três cabeçalhos de tabela não é óbvia numa leitura corrida,
+mesmo estando lá.
+
+**Achado 1 — página vira capa (sondagem)**: `extrair_capa()` aceita a
+imagem da página 1 como capa porque a proporção bate (612×402.7pt contra
+3672×2416px — diferença de 0,01%, tolerância é 15%). Comportamento por
+desenho, sem segunda checagem para distinguir "capa de verdade" de "única
+página do documento, inteira, escaneada" — mesma lacuna já registrada
+acima para `extrair_capa`, agora com uma segunda instância real.
+
+**Achado 2 — título cru em PDF sem metadado de título** (currículo LaTeX,
+2 páginas, 100% vetorial, sem capa extraída por falta de imagem
+embutida — comportamento correto): confirmado com `--inspect` que a tela
+"antes de converter" já calcula um título formatado
+(`derivar_titulo_do_nome` → "Cv Analista De Dados Thiago P Almeida") e
+pré-preenche o campo. Mas existem **dois fallbacks de título divergentes**:
+`inspecionar_pdf` usa `derivar_titulo_do_nome`; `main()`, quando `--titulo`
+chega vazio, usa `args.pdf_entrada.stem` cru (`foliant.py` ~linha 2107;
+o próprio docstring de `derivar_titulo_do_nome` já avisa que ela "não
+altera o fallback já existente em `main()`"). Se o campo pré-preenchido
+for apagado na tela (ex.: para testar "deixar em branco"), o resultado
+final não reaproveita a mesma sugestão bonita — cai num fallback pior.
+**Defeito de design não documentado até agora**, não uma falha de OCR/
+extração.
+
+**Achado 3 — metadado de autor ilegível repassado sem checagem** (livro
+do Kechi Hirama, 211 páginas): `doc.metadata['author']` já vem corrompido
+no PDF de origem (`4<8=8AB@0B>@`, gravado por PDFsharp 1.32 em 2013) —
+confirmado lendo o metadado bruto, sem nenhum código do Foliant
+envolvido. `inspecionar_pdf` lê o campo e a interface pré-preenche a tela
+com ele sem nenhuma validação de sanidade; o valor foi confirmado chegando
+intacto até o `dc:creator` do `.epub` final. Garbage-in, garbage-out no
+dado de origem, mas falta uma checagem (ex.: proporção de caracteres
+fora da faixa esperada) antes de sugerir esse valor na tela.
+
+**Achado 4 — acentos quebrados em PDF de saída pdfTeX/OT1** (mesmo
+currículo LaTeX): confirmado na camada de texto bruta do PDF —
+`"opera¸c˜oes"`, `"audit´avel"`, acento como caractere separado. É a
+assinatura de fonte Computer Modern em codificação OT1 sem
+`\usepackage[T1]{fontenc}`: o TeX desenha o acento como um glyph
+independente posicionado por cima da letra (visualmente correto no PDF),
+e a extração de texto lê os dois glyphs na ordem do fluxo sem recompor
+num único caractere Unicode — defeito gravado desde a geração do PDF,
+nenhuma etapa do Foliant toca nisso. O livro do Kechi Hirama (fonte
+PDFsharp, não pdfTeX) não tem esse problema — acentos saem corretos,
+o que descarta regressão sistêmica de codificação. **Classe de defeito
+nova**: PDF gerado por pdfTeX/OT1, fora da calibração existente (FDE e
+PEREIRA não vêm dessa fonte).
+
 ### Defeitos abertos — atualização após a Fase 4.26
 
 1. Imagem extraída com fundo preto (SMask não aplicado) — Fase 4.14.
@@ -4347,4 +4413,23 @@ linhas, sem OCR extra.
 4. **Novo**: conteúdo impresso girado em página com prosa em pé (acima).
 5. PP-DocLayout-S: decisão em aberto. Com orientação corrigida, o recall
    local sai de 3/15 (20,0%) para 10/15 (66,7%) — ainda abaixo da meta.
+6. **Novo**: `extrair_capa()` aceita a única página de um PDF de 1 página
+   inteiramente escaneada como se fosse a capa do livro — 2ª instância
+   real confirmada (sondagem), mesma lacuna já anotada no docstring da
+   função (nenhuma checagem além de proporção largura/altura).
+7. **Novo**: título cai em dois fallbacks divergentes quando `--titulo`
+   chega vazio — `inspecionar_pdf`/`derivar_titulo_do_nome` (formatado,
+   só usado para pré-popular a tela) vs. `main()`/`args.pdf_entrada.stem`
+   (cru, usado na conversão de verdade). Um título pré-preenchido e depois
+   apagado pelo usuário não reaproveita a mesma sugestão.
+8. **Novo**: `inspecionar_pdf` repassa `doc.metadata['author']`/`title`
+   para a tela sem nenhuma checagem de sanidade — um metadado já
+   corrompido no PDF de origem (confirmado: PDFsharp, 2013) chega
+   ilegível até o `.epub` final, sem nenhum sinal de alerta.
+9. **Novo, classe de defeito**: PDF gerado por pdfTeX com fonte Computer
+   Modern em codificação OT1 (sem `\usepackage[T1]{fontenc}`) extrai
+   acentos como caractere separado do glyph-base (`"opera¸c˜oes"`,
+   `"audit´avel"`) — defeito já gravado na camada de texto do PDF de
+   origem, fora da calibração existente (FDE, PEREIRA não vêm dessa
+   fonte). Ver `RELATORIO_TESTE_MANUAL_2026.md`.
 

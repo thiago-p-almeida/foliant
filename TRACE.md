@@ -2809,3 +2809,88 @@ problema não estava na medição: estava em **o que o corpus tinha deixado de
 fora**, por um motivo que na época parecia bom. Corpus de teste herda as
 exclusões de quem o montou, e essas exclusões não se anunciam.
 
+
+## Vigésimo oitavo episódio — quatro defeitos que não eram um só, achados testando o app de verdade
+
+Depois da Fase 4.26, o Thiago rodou o próprio `Foliant.app` instalado —
+não um script — em três arquivos fora do corpus de calibração:
+`sondagem_rotate_app.pdf` (a mesma página do 26º episódio), um currículo
+de 2 páginas gerado por LaTeX, e um livro de 211 páginas
+("Engenharia de Software", Kechi Hirama). O primeiro teste virou uma
+lição de método sobre reconciliar relatos divergentes; os outros dois
+descascaram três defeitos que não tinham nada a ver com OCR nem com
+orientação de página.
+
+**A reconciliação primeiro.** Eu tinha reportado o `.epub` da sondagem
+com o texto fora de ordem — cabeçalhos de tabela colados
+("FACILIDADES... DEFLAGRADORESQualidades... DIFICULDADES..."). O Thiago
+testou de novo pela interface gráfica, abriu no Apple Books, e viu outra
+coisa: conteúdo diluído em ~5 páginas, "quase estruturado", sem parecer
+um bloco corrido. Comparei os dois `.epub` byte a byte — o dele
+(`Documents/sondagem_rotate_app.epub`) e o meu, gerado por linha de
+comando. O HTML interno é **idêntico**: mesmas 37 tags `<p>`, mesma
+ordem, o mesmo parágrafo grudado. A única diferença era a tag
+`<title>`, reflexo direto de eu ter passado um `--titulo` diferente na
+CLI. Não havia divergência de comportamento nenhuma entre GUI e CLI — o
+parágrafo problemático é só longo o bastante para atravessar uma virada
+de página no leitor, então a colagem dos três cabeçalhos não salta aos
+olhos do jeito que salta comparando o markup bruto. Os dois relatos
+descreviam a mesma falha por ângulos diferentes: um pela estrutura do
+arquivo, outro pela experiência de leitura.
+
+**Depois vieram os três achados novos**, cada um confirmado direto no
+arquivo, não por suposição:
+
+1. **A página da sondagem virou capa do próprio conteúdo.** Medi a
+   proporção da imagem embutida (3672×2416) contra a da página
+   (612×402.7pt): diferença de 0,01%, bem dentro dos 15% que
+   `extrair_capa()` aceita. É o comportamento já documentado da função —
+   ela não distingue "isto é a capa do livro" de "isto é a única página
+   do livro, inteira, escaneada".
+
+2. **O currículo (2 páginas, LaTeX) saiu com título cru e sem capa.**
+   Sem capa porque as duas páginas são 100% vetoriais — zero imagens
+   embutidas, `extrair_capa()` não tem o que extrair, comportamento
+   correto. O título cru (`cv_analista_de_dados_Thiago_P_Almeida`, sem
+   formatação) veio de uma divergência que não estava documentada: a
+   tela de inspeção já calcula um título bonito via
+   `derivar_titulo_do_nome` ("Cv Analista De Dados Thiago P Almeida") e
+   pré-preenche o campo — mas se o campo chega vazio na conversão de
+   verdade, `main()` usa `args.pdf_entrada.stem` cru, não a mesma função.
+   São dois "valores padrão de título" diferentes que deveriam ser o
+   mesmo. Hipótese mais provável: o Thiago apagou o campo pré-preenchido
+   para testar "o que acontece se eu deixar em branco", sem saber que
+   "em branco" cai num fallback pior do que a sugestão que tinha acabado
+   de ver.
+
+3. **O livro do Kechi Hirama saiu com autor ilegível**
+   (`4<8=8AB@0B>@`). Não é corrupção introduzida pelo Foliant — confirmei
+   lendo `doc.metadata` direto do PDF: o campo `/Author` **já vem
+   corrompido no arquivo original**, gravado por PDFsharp em 2013. O
+   Foliant lê o metadado e repassa sem nenhuma checagem de sanidade —
+   garbage-in, garbage-out, mas uma lacuna real: nada detecta "este texto
+   parece binário/ilegível" antes de sugeri-lo na tela.
+
+4. **O currículo também saiu com acentos quebrados** —
+   `"opera¸c˜oes"`, `"audit´avel"`, o acento como caractere separado,
+   empurrado para o lado. Confirmei na camada de texto bruta do PDF, sem
+   nenhum código do Foliant envolvido: é a assinatura clássica de pdfTeX
+   com fonte Computer Modern em codificação OT1, sem
+   `\usepackage[T1]{fontenc}` — o TeX desenha o acento como um glyph
+   separado por cima da letra (efeito visual correto no PDF), e a
+   extração de texto lê os dois glyphs na ordem do fluxo, sem recompor
+   num único caractere Unicode. O mesmo livro do Kechi Hirama, gerado por
+   outra ferramenta, não tem esse problema — os acentos saem corretos.
+   Não é regressão nem defeito sistêmico: é uma classe de PDF (saída
+   crua de pdfTeX/OT1) fora do que o projeto calibrou até aqui, que foi
+   sempre livro escaneado ou fotografado.
+
+A lição de método: dois relatos "diferentes" do mesmo teste não são
+necessariamente uma contradição a resolver por autoridade — às vezes são
+a mesma verdade vista de ângulos diferentes, e comparar o artefato bruto
+(o HTML dentro do `.epub`, não a experiência de leitura) é o que decide.
+Já os outros três achados mostram algo distinto: testar fora do corpus
+de calibração (currículo LaTeX, livro de fonte PDFsharp) expõe categorias
+de defeito que nenhum dos dois livros de referência do projeto (FDE,
+PEREIRA) jamais poderia ter revelado, porque nenhum dos dois vem dessas
+fontes.

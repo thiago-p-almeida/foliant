@@ -3645,3 +3645,38 @@ negativo. **Uma amostra não é uma classe.**
 defeito aberto; piso de 10 do veto pendente de corpus de validação separado,
 mesma pendência do limiar 0,50 do PP-DocLayout-S.
 
+
+## Teste manual pós-Fase 4.26 no app instalado — quatro achados fora do corpus de calibração
+
+**Critério**: testar o `Foliant.app` instalado (não script) em arquivos
+fora do corpus de calibração habitual (FDE, PEREIRA), reconciliando
+qualquer divergência entre relato manual e relato técnico antes de
+registrar conclusão.
+
+**Resultado**:
+
+1. **Reconciliação de relato divergente** (sondagem): `.epub` gerado pela
+   GUI e `.epub` gerado por CLI comparados byte a byte — HTML interno
+   **idêntico**. A percepção diferente de leitura (Apple Books vs.
+   inspeção de markup) vinha do parágrafo problemático atravessar uma
+   virada de página, não de comportamento divergente do software. ✔
+2. Página vira capa (sondagem, 1 página 100% escaneada): confirmado —
+   `extrair_capa()` aceita por proporção (diferença 0,01%, tolerância
+   15%), sem checagem adicional. Registrado como 2ª instância da lacuna
+   já anotada no código.
+3. Título cru em PDF sem título de metadado (currículo LaTeX, 2 páginas):
+   confirmado — dois fallbacks de título divergentes (`derivar_titulo_do_nome`
+   só na tela de inspeção; `args.pdf_entrada.stem` cru em `main()`).
+   Defeito de design novo, registrado.
+4. Autor ilegível repassado sem checagem (Kechi Hirama, 211 páginas):
+   confirmado — `doc.metadata['author']` já corrompido no PDF de origem
+   (PDFsharp, 2013), repassado até o `.epub` final sem sanitização.
+   Defeito novo, registrado.
+5. Acentos quebrados em PDF pdfTeX/OT1 (mesmo currículo LaTeX): confirmado
+   direto na camada de texto do PDF, sem envolvimento de código do
+   Foliant. Classe de defeito nova, fora da calibração existente.
+
+Relatório completo: `RELATORIO_TESTE_MANUAL_2026.md`. Registrado em
+`ARCHITECTURE.md` (seção "Teste manual no app instalado") e `TRACE.md`
+(28º episódio). **Nenhum código alterado** — investigação e registro,
+sem implementação.
